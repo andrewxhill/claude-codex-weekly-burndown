@@ -318,7 +318,38 @@ HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1
 HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1 && ok "is idempotent" || bad "is idempotent"
 rm -rf "$sandbox/.agents/skills/add-job-to-burn-plan"; mkdir -p "$sandbox/.agents/skills/add-job-to-burn-plan"
 HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1 && bad "refuses to clobber a real dir" || ok "refuses to clobber a real dir"
+rm -rf "$sandbox/.agents/skills/add-job-to-burn-plan"
+# No ~/.codex means nothing to point at, which is a clean skip rather than a failure.
+HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1 && ok "a host without codex still installs clean" || bad "a host without codex still installs clean"
 rm -rf "$sandbox"
+
+# Codex discovers nothing on its own, so the installer has to leave a pointer in
+# the instruction file Codex loads globally.
+sandbox="$(mktemp -d)"; mkdir -p "$sandbox/.codex"
+HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1
+agents="$sandbox/.codex/AGENTS.md"
+grep -q 'add that to the burn list' "$agents" 2>/dev/null \
+  && ok "leaves a codex pointer naming the trigger" || bad "leaves a codex pointer naming the trigger"
+grep -q 'add-job-to-burn-plan/SKILL.md' "$agents" 2>/dev/null \
+  && ok "the codex pointer names the skill file" || bad "the codex pointer names the skill file"
+
+printf 'existing content\n' > "$agents"
+HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1
+grep -q 'existing content' "$agents" && ok "keeps what was already in the instruction file" || bad "keeps what was already in the instruction file"
+
+HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1
+HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1
+blocks="$(grep -c 'weekly-burn:add-job-to-burn-plan' "$agents" || true)"
+[ "$blocks" -eq 2 ] && ok "re-running leaves exactly one pointer block" || bad "re-running leaves exactly one pointer block" "$blocks marker lines"
+
+# A declarative dotfile setup renders that file read-only. Say so and print the
+# block rather than failing silently or crashing.
+chmod 444 "$agents"
+out="$(HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" 2>&1)"; rc=$?
+{ [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'not writable'; } \
+  && ok "a read-only instruction file is reported, not ignored" || bad "a read-only instruction file is reported, not ignored" "$out"
+printf '%s' "$out" | grep -q 'Deferred work' && ok "and the block is printed for the user to place" || bad "and the block is printed for the user to place"
+chmod 644 "$agents"; rm -rf "$sandbox"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

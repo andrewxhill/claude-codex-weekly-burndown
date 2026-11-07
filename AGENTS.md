@@ -16,8 +16,17 @@ Project context for Codex CLI sessions in this repo. Read `CLAUDE.md` as well: t
 
 **Authentication survives a scheduled job.** Codex resolves one credential store, `~/.codex/auth.json`, which a launchd or cron job reads like any other file. The shadowed-credential problem in `docs/scheduling.md` is Claude-side only.
 
-## Open question: skill discovery
+## Skill discovery
 
-Codex does not read `~/.agents/skills` the way Claude Code does, so `scripts/install-global-skill.sh` alone leaves `add-job-to-burn-plan` invisible to Codex sessions.
+Codex has no skill mechanism at 0.166.0: no `skills` subcommand, nothing for it in `config.toml`, and `codex plugin` only reaches marketplace plugins. So `scripts/install-global-skill.sh` leaves Codex a pointer instead, in `~/.codex/AGENTS.md`, which Codex loads in every session. A pointer in an always-loaded file does the same work a skill description does: it says what the material is and when to reach for it.
 
-To close this: find the surface Codex honors by checking `codex --help`, `~/.codex/config.toml`, and `~/.codex/AGENTS.md`, confirm it triggers, then record what worked in this section. The burner does not depend on it, because `scripts/burn.sh` passes `.codex/prompts/burn-remaining.md` directly as the prompt.
+Verified on 0.166.0. A `codex exec` run handed "add that to the burn list" followed the pointer, read the skill, wrote a brief with scope boundaries, and inserted a correctly formatted row, for about 15k tokens.
+
+The plan sits outside your workspace, so a sandboxed run needs its directory made writable before the row can be written:
+
+```bash
+codex exec --sandbox workspace-write \
+  --add-dir "$(dirname "$(cat ~/.config/weekly-burn/plan-path)")" ...
+```
+
+An interactive session asks for approval instead of needing the flag. The burner itself is unaffected either way, because `scripts/burn.sh` passes `.codex/prompts/burn-remaining.md` directly as the prompt.

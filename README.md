@@ -20,7 +20,9 @@ Jobs live one row per line, priority order top down, each with an expiration. A 
 
 ## Dropping jobs on the list
 
-Setup installs `add-job-to-burn-plan` globally, so any agent session on this machine can reach it. Hit a "would be nice later" during normal work and your agent writes the brief, slots the row, and gets back to what you were doing.
+Setup installs `add-job-to-burn-plan` for both agents, so any session on the machine can reach it. Hit a "would be nice later" during normal work and your agent writes the brief, slots the row, and gets back to what you were doing.
+
+The two discover it differently. Claude Code scans a skills directory, so the skill is symlinked there. Codex has no skill mechanism, so it gets a pointer in `~/.codex/AGENTS.md`, the file it loads in every session. Both trigger on the same phrasings.
 
 Those briefs stay out of this repo by default. They name clients and unreleased work, and this repo is public, so setup puts the real plan in a private directory and leaves the `PLAN.md` here as an empty example.
 

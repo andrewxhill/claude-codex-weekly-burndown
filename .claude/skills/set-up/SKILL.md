@@ -79,13 +79,23 @@ Running the script yourself from a terminal is not a substitute and does not cou
 
 An abort naming authentication is common on the first macOS attempt, and `docs/scheduling.md` has the credential comparison that settles it. Read what the log says, fix that, and fire again until it shows a clean dry run.
 
-Run `scripts/install-global-skill.sh`, then confirm the global skill resolves from an unrelated directory:
+Run `scripts/install-global-skill.sh`. It installs for both agents, which discover differently, so confirm both.
+
+Claude, from a directory with nothing to do with this repo:
 
 ```bash
 cd /tmp && claude -p "Answer yes or no, invoking nothing: is a skill named add-job-to-burn-plan available to you?" --model haiku
 ```
 
-Done when the log shows a clean dry run for every provider and that probe answers yes. Leave the real burn for the scheduled fire.
+Codex, by checking the pointer landed in the file it loads globally:
+
+```bash
+grep -c 'add that to the burn list' ~/.codex/AGENTS.md
+```
+
+When that file is read-only, the installer prints the block and exits non-zero. On a host with a declarative dotfile setup, put the block in whatever renders the file.
+
+Done when the log shows a clean dry run for every provider, the Claude probe answers yes, and the Codex pointer is in place. Leave the real burn for the scheduled fire.
 
 ## 7. Tell them what they have
 
