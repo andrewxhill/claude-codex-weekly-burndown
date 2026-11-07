@@ -105,7 +105,7 @@ say "quota ${used_percent}% used, resets $resets_at ($(jqf detail))"
 # --- deadline ------------------------------------------------------------
 # Everything downstream is driven by seconds-until-stop, so a bad reset time
 # stops the run here rather than producing a nonsense timeout.
-seconds_left="$(python3 -I - "$resets_at" "$stop_margin_minutes" <<'PY'
+window="$(python3 -I - "$resets_at" "$stop_margin_minutes" "$window_hours" <<'WIN'
 import sys
 from datetime import datetime, timedelta, timezone
 try:
@@ -114,15 +114,29 @@ except ValueError:
     print("ERR"); raise SystemExit(0)
 if reset.tzinfo is None:
     print("ERR"); raise SystemExit(0)
+now = datetime.now(timezone.utc)
 stop = reset - timedelta(minutes=int(sys.argv[2]))
-print(int((stop - datetime.now(timezone.utc)).total_seconds()))
-PY
+opens = reset - timedelta(hours=float(sys.argv[3]))
+print(int((stop - now).total_seconds()), int((opens - now).total_seconds()),
+      opens.astimezone().strftime("%a %Y-%m-%d %H:%M %Z"))
+WIN
 )"
-[ "$seconds_left" != "ERR" ] || die "could not parse the reset time $resets_at"
+[ "$window" != "ERR" ] || die "could not parse the reset time $resets_at"
+seconds_left="$(printf '%s' "$window" | cut -d' ' -f1)"
+seconds_until_open="$(printf '%s' "$window" | cut -d' ' -f2)"
+opens_human="$(printf '%s' "$window" | cut -d' ' -f3-)"
 
 if [ "$seconds_left" -le 0 ]; then
-  say "window already closed (reset $resets_at is within the ${stop_margin_minutes}m margin); nothing to do"
+  say "window already closed (reset $resets_at is inside the ${stop_margin_minutes}m margin); nothing to do"
   exit 0
+fi
+
+# Two edges, both from the live reset. A run that ignores the opening edge treats
+# the whole rest of the week as its budget, which is ordinary usage rather than
+# burning leftovers.
+not_open=""
+if [ "$seconds_until_open" -gt 0 ] && [ -z "${WEEKLY_BURN_FORCE:-}" ]; then
+  not_open="window has not opened yet; it opens $opens_human, ${window_hours}h before the reset"
 fi
 
 # --- guard ---------------------------------------------------------------
@@ -136,9 +150,18 @@ fi
 if [ "$dry_run" = "true" ]; then
   top="$(grep -m1 -E '^- \[ \] ' "$plan_path" || true)"
   say "dry run: $([ -n "$top" ] && printf 'top of queue %s' "$top" || printf 'no open rows in %s' "$plan_path")"
-  say "dry run: ${seconds_left}s of budget window left, hard stop ${stop_margin_minutes}m before $resets_at"
+  if [ "$seconds_until_open" -gt 0 ]; then
+    say "dry run: window opens $opens_human, in $(( seconds_until_open / 3600 ))h; hard stop ${stop_margin_minutes}m before $resets_at"
+  else
+    say "dry run: window is open, $(( seconds_left / 3600 ))h$(( (seconds_left % 3600) / 60 ))m until the hard stop before $resets_at"
+  fi
   say "dry run: guard would $([ -n "$guard_blocks" ] && printf 'BLOCK (%s)' "$guard_blocks" || printf 'allow')"
   say "dry run: fired correctly and spent nothing. Set dry_run=false in $conf to arm it."
+  exit 0
+fi
+
+if [ -n "$not_open" ]; then
+  say "$not_open. Nothing will run. Set WEEKLY_BURN_FORCE=1 to burn now anyway."
   exit 0
 fi
 

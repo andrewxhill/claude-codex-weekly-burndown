@@ -139,6 +139,37 @@ out="$("$runner_under_test" claude 2>&1)"; rc=$?
 { [ "$rc" -ne 0 ] && ! grep -q 'burn-remaining' "$STUB_LOG"; } && ok "an unparseable reset time stops the run" || bad "an unparseable reset time stops the run" "rc=$rc $out"
 teardown_sandbox
 
+printf '\nrunner: the window has a start\n'
+# Fired or invoked days early, a run must not treat the whole remainder of the
+# week as its window. That would spend budget nobody wanted spent yet.
+setup_sandbox
+export STUB_RESET="$(python3 -I -c "
+from datetime import datetime,timedelta,timezone
+print((datetime.now(timezone.utc)+timedelta(days=4)).isoformat())")"
+out="$("$runner_under_test" claude 2>&1)"; rc=$?
+{ [ "$rc" -eq 0 ] && ! grep -q 'burn-remaining' "$STUB_LOG"; } && ok "starts no work before the window opens" || bad "starts no work before the window opens" "rc=$rc $out"
+printf '%s' "$out" | grep -qi 'window has not opened' && ok "says the window has not opened" || bad "says the window has not opened" "$out"
+printf '%s' "$out" | grep -qi 'WEEKLY_BURN_FORCE' && ok "names the override for a manual run" || bad "names the override for a manual run" "$out"
+teardown_sandbox
+
+setup_sandbox
+export STUB_RESET="$(python3 -I -c "
+from datetime import datetime,timedelta,timezone
+print((datetime.now(timezone.utc)+timedelta(days=4)).isoformat())")"
+out="$(WEEKLY_BURN_FORCE=1 "$runner_under_test" claude 2>&1)"
+grep -q 'burn-remaining' "$STUB_LOG" && ok "WEEKLY_BURN_FORCE starts the run anyway" || bad "WEEKLY_BURN_FORCE starts the run anyway" "$out"
+printf '%s' "$out" | grep -qE '[0-9]+h[0-9]+m until hard stop' && ok "a forced run still gets the hard stop" || bad "a forced run still gets the hard stop" "$out"
+teardown_sandbox
+
+setup_sandbox
+sed -i.bak 's/^dry_run=false/dry_run=true/' "$WEEKLY_BURN_CONFIG_DIR/claude.conf"
+export STUB_RESET="$(python3 -I -c "
+from datetime import datetime,timedelta,timezone
+print((datetime.now(timezone.utc)+timedelta(days=4)).isoformat())")"
+out="$("$runner_under_test" claude 2>&1)"; rc=$?
+{ [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qi 'window opens'; } && ok "dry run says when the window opens" || bad "dry run says when the window opens" "rc=$rc $out"
+teardown_sandbox
+
 printf '\nrunner: spend guard\n'
 setup_sandbox
 export STUB_ALLOWED=False STUB_PCT=100
