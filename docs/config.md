@@ -1,72 +1,85 @@
 # Config
 
-Setup writes three things under `~/.config/weekly-burn/`. The burner and the global skill read them at runtime. Nothing here is secret, and nothing here belongs in a commit.
+Setup writes everything under `~/.config/weekly-burn/`. The runner and the global skill read it at fire time. Nothing here is secret, and nothing here belongs in a commit.
 
 ## `plan-path`
 
 One line: the absolute path to your real `PLAN.md`.
 
-`add-job-to-burn-plan` reads this from any repo on the machine, which is the whole reason it is a bare file rather than a key inside a provider config. Job briefs live beside it, under `<dirname>/jobs/<slug>/readme.md`.
+`add-job-to-burn-plan` reads this from any repo on the machine, which is why it is a bare file rather than a key inside a provider conf. Job briefs live beside it, at `<dirname>/jobs/<slug>/readme.md`.
 
-Setup defaults it to `~/.local/state/weekly-burn/plan/PLAN.md`. Point it at this repo's own `PLAN.md` only if you are fine publishing every brief you ever defer.
+Setup defaults it to `~/.local/state/weekly-burn/plan/PLAN.md`. Point it at this repo's `PLAN.md` only if you are fine publishing every brief you ever defer.
 
 ## `repo-path`
 
-One line: the absolute path to this repo's checkout.
+One line: the absolute path to this repo's checkout. The runner needs it to find the skills and the Codex prompt.
 
-The burner needs it to find `docs/quota-detection.md` at fire time. Without it, moving the plan out of the repo leaves the burner unable to find the quota recipe.
+## `claude.conf` and `codex.conf`
 
-## `claude.conf`
-
-`key=value` lines, `#` for comments. Every key is required, and the wrapper refuses to run when one is empty.
+One per provider, `key=value`, `#` for comments. Every key is required; `burn.sh` refuses to run when one is empty.
 
 ```ini
-# Model the burner runs on. Decides which weekly bucket drains.
+# --- what to run ---------------------------------------------------------
+# Decides which weekly bucket drains.
 model=claude-opus-5
 
-# low | medium | high | xhigh | max
+# claude: low | medium | high | xhigh | max
+# codex:  passed through as model_reasoning_effort
 effort=high
 
-# launchd | cloud-routine
-trigger=launchd
-
-# acceptEdits | auto | dontAsk | bypassPermissions | manual | plan
-# Nobody is awake to answer a prompt, so `manual` hangs until the window shuts.
+# claude: acceptEdits | auto | dontAsk | bypassPermissions | manual | plan
+# codex:  read-only | workspace-write | danger-full-access
+# Nobody is awake to answer a prompt. `manual` hangs until the window shuts.
 permission_mode=acceptEdits
 
+# --- the window ----------------------------------------------------------
+# How long before the reset the job fires, and how much of the week's
+# remaining budget the burner gets to spend.
+window_hours=6
+
+# How far before the reset everything stops. The runner computes the hard
+# deadline from the live reset time and kills the burner at it, so quota
+# never leaks into next week.
+stop_margin_minutes=5
+
+# --- guards --------------------------------------------------------------
 # true: read quota, name the top job, write the log, spend nothing.
 # Leave it true until you have watched one fire land.
 dry_run=true
 
-# false: refuse to run once the bucket hits 100%. Subscription tokens are
-# already paid for; overage is not.
+# false: refuse to start when the provider says spending is not allowed.
 allow_overage=false
 
-# ISO 8601 reset time the trigger was built around. The burner compares the
-# live reset against this and re-arms when they drift past 15 minutes.
+# --- schedule bookkeeping ------------------------------------------------
+# ISO 8601 reset the schedule was built around. The burner compares the live
+# reset against this and re-arms past fifteen minutes of drift.
 reset_anchor=2026-11-11T02:00:00-08:00
 
-# Minutes before the reset that the trigger fires.
-lead_minutes=120
+# launchd | systemd | cron | schtasks
+trigger=launchd
 
-# Set by setup. launchd label, or the routine id when trigger=cloud-routine.
+# launchd label, systemd unit, or whatever identifies the job to its scheduler.
 trigger_id=sh.weekly-burn.claude
+
+# --- alerting ------------------------------------------------------------
+# Optional. Runs on an abort or a non-deadline failure, with
+# WEEKLY_BURN_MESSAGE and WEEKLY_BURN_PROVIDER in its environment.
+# Empty falls back to osascript on macOS or notify-send on Linux.
+alert_command=
 ```
 
-## `codex.conf`
+The two confs are independent. Claude and Codex reset on different days, so they get different `reset_anchor` values, different `trigger_id` values, and separate scheduled jobs.
 
-Same shape, for the Codex burner. Setup leaves it unwritten while `docs/quota-detection.md` still lists the Codex quota read as unresolved.
+## Environment the scheduled job needs
 
-## Environment the trigger needs
+`scripts/burn.sh` and `scripts/read-quota.py` read these:
 
-`scripts/burn-wrapper.sh` reads three environment overrides, all optional except on launchd:
-
-- `CLAUDE_BIN`, the absolute path to the `claude` binary. Required in a launchd plist, because launchd's PATH excludes wherever `claude` actually lives. `docs/scheduling.md` has a worked plist.
+- `CLAUDE_BIN` and `CODEX_BIN`, absolute paths to the binaries. Required in any scheduled job, because schedulers hand you a minimal PATH that excludes wherever these are installed. Both scripts fail with that specific complaint instead of something vague.
 - `WEEKLY_BURN_CONFIG_DIR`, defaulting to `~/.config/weekly-burn`.
 - `WEEKLY_BURN_STATE_DIR`, defaulting to `~/.local/state/weekly-burn`.
 
-The last two exist so `scripts/test.sh` can run against a sandbox. Leave them unset in the plist.
+The last two exist so `scripts/test.sh` can run against a sandbox. Leave them unset in the job.
 
 ## State
 
-`~/.local/state/weekly-burn/last-run.log` gets one tab-separated line per event, UTC timestamps. The wrapper creates the directory. Nothing rotates it, and `.gitignore` covers `*.log` so a plan kept inside the repo will not drag the log along.
+`~/.local/state/weekly-burn/last-run.log`, one tab-separated line per event with UTC timestamps and the provider name. `burn.sh` creates the directory. Nothing rotates it, and `.gitignore` covers `*.log`.

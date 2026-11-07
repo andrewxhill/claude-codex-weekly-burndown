@@ -1,32 +1,28 @@
 # Scheduling
 
-Two mechanisms can wake the burner. They reach different things, and the difference decides how the rest of the repo is wired. Setup asks you to pick one and records it as `trigger` in `claude.conf`.
+One job per provider, because Claude and Codex meter on their own clocks and reset on different days. Each job opens that provider's burn window.
 
-## What will not work
+## The burn window
 
-`CronCreate`, the in-session cron tool, cannot do this job. Its jobs live in memory, die when the Claude session exits, fire only while the REPL sits idle, and expire after seven days. Its `durable` parameter has no effect. Nobody keeps a REPL idle for five days, so a weekly trigger built on it never fires. If you find a doc in this repo that says otherwise, it is stale; fix it.
+You pick how long the window is. `window_hours=6` means the job starts six hours before the reset and the burner works until the rollover is nearly on top of it.
 
-## `trigger=launchd` (local)
+Three numbers matter:
 
-A launchd agent on your Mac runs `scripts/burn-wrapper.sh`, which reads the quota, checks the spend guard, then runs `claude -p "/burn-remaining"`.
+- `window_hours`, when the job fires. Yours to choose.
+- `stop_margin_minutes`, how far before the reset everything stops. Default 5.
+- The hard stop, which `scripts/burn.sh` computes from the live reset time and enforces with a kill.
 
-What this buys you: the burner sees your real worktree, reads `~/.config/weekly-burn/`, writes `~/.local/state/weekly-burn/last-run.log`, and commits where you can see the commits. Every path the rest of this repo assumes resolves correctly.
+The hard stop is the part that matters. Quota spent after the rollover comes out of next week, which defeats the point, so the burner does not get to decide when to quit. `burn.sh` wraps the agent in a deadline, tells it how long it has, and kills it at the edge. An agent that loses track of time gets stopped anyway.
 
-What it costs you: the Mac has to be awake and logged in at the fire time. A sleeping laptop misses the window, and launchd runs the job once the machine wakes, which may be after the reset.
+Exit code 124, 143, or 137 from the burner means the deadline fired. That is the designed ending, not a failure, and the log says so.
 
-On a machine whose system config is declarative, the agent belongs in that spec rather than hand-written into `~/Library/LaunchAgents/`. On this machine that means `~/Projects/_infra/macos-spec` through nix-darwin, which owns `launchd.user.agents`. Setup checks for a spec and routes the change through it. Elsewhere, write the plist and load it:
+## Picking the fire time
 
-```bash
-launchctl bootstrap gui/"$(id -u)" ~/Library/LaunchAgents/sh.weekly-burn.claude.plist
-```
+Read the live reset, subtract `window_hours`, convert to local time, and express that in whatever the host's scheduler speaks. Never hardcode a weekday from an example; reset days differ per account and per provider.
 
-The path argument is required. `launchctl bootstrap gui/$(id -u)` on its own does nothing.
+A scheduled job gets a minimal environment, so set `CLAUDE_BIN` or `CODEX_BIN` to the absolute path of the binary. `which claude` in your shell is not what the scheduler sees. Everything in this repo fails with that exact complaint rather than something vague, but it still fails.
 
-### The PATH trap
-
-launchd hands a job `/usr/bin:/bin:/usr/sbin:/sbin` and nothing more. Your `claude` almost certainly lives somewhere else, `~/.local/bin/claude` on a native install, so the wrapper cannot find it and the fire dies on the first call.
-
-Set `CLAUDE_BIN` in the plist. The wrapper prefers it over PATH discovery and says exactly this when it finds neither.
+## macOS: launchd
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -36,50 +32,93 @@ Set `CLAUDE_BIN` in the plist. The wrapper prefers it over PATH discovery and sa
   <key>Label</key><string>sh.weekly-burn.claude</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/absolute/path/to/repo/scripts/burn-wrapper.sh</string>
+    <string>/absolute/path/to/repo/scripts/burn.sh</string>
+    <string>claude</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>CLAUDE_BIN</key><string>/Users/you/.local/bin/claude</string>
     <key>HOME</key><string>/Users/you</string>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Weekday</key><integer>3</integer>
-    <key>Hour</key><integer>0</integer>
+    <key>Weekday</key><integer>2</integer>
+    <key>Hour</key><integer>20</integer>
     <key>Minute</key><integer>0</integer>
   </dict>
-  <key>StandardOutPath</key><string>/Users/you/.local/state/weekly-burn/launchd.out.log</string>
-  <key>StandardErrorPath</key><string>/Users/you/.local/state/weekly-burn/launchd.err.log</string>
+  <key>StandardOutPath</key><string>/Users/you/.local/state/weekly-burn/launchd.claude.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/you/.local/state/weekly-burn/launchd.claude.err.log</string>
 </dict>
 </plist>
 ```
 
-`Weekday` runs 0 to 7 with Sunday at both ends, so 3 is Wednesday. Derive it from the live reset, never from this example.
+```bash
+launchctl bootstrap gui/"$(id -u)" ~/Library/LaunchAgents/sh.weekly-burn.claude.plist
+launchctl kickstart -p gui/"$(id -u)"/sh.weekly-burn.claude   # fire it once, now
+```
 
-`StartCalendarInterval` fires once when the Mac wakes if it was asleep at the appointed time. That late fire can land after the reset, in which case the burner reads a full bucket and a reset a week out. It will do the work anyway. Decide whether you want that; `lead_minutes` and your sleep schedule are the only things that prevent it.
+The path argument on `bootstrap` is required. `Weekday` runs 0 to 7 with Sunday at both ends. Derive it from the live reset, never from this example.
 
-## `trigger=cloud-routine` (durable)
+On a machine whose system config is declarative, the agent belongs in that spec instead of hand-written here. On a nix-darwin host that means `launchd.user.agents`.
 
-`/schedule` creates a scheduled cloud agent that fires whether or not your machine is on. It is in research preview, so expect the limits to move.
+Asleep at the fire time, launchd runs the job when the machine wakes. That late run can land after the reset, which is exactly why `burn.sh` re-reads the live window and exits clean when it finds the window already closed.
 
-Four things break if you pick this without planning for them:
+## Linux: systemd timer
 
-- A cloud session loads no skills from your machine. `burn-remaining` has to reach it through the pushed repo or inside the prompt itself.
-- `~/.config/weekly-burn/` and `~/.local/state/weekly-burn/` do not exist there. Config has to travel in the repo or the prompt, and the log has to go somewhere the cloud session can write.
-- Commits land in a cloud checkout. They reach you only if the routine pushes, which means the burner needs a branch to push to and you need to accept unattended pushes.
-- The burner cannot re-arm itself. `CronDelete` and `CronCreate` do not touch a cloud routine, so a drifting reset window needs you.
+```ini
+# ~/.config/systemd/user/weekly-burn@.service
+[Service]
+Type=oneshot
+Environment=CLAUDE_BIN=%h/.local/bin/claude
+Environment=CODEX_BIN=%h/.local/bin/codex
+ExecStart=/absolute/path/to/repo/scripts/burn.sh %i
+```
 
-Pick this when you want the window caught reliably and you are willing to move config into the repo and let the routine push a branch.
+```ini
+# ~/.config/systemd/user/weekly-burn@.timer
+[Timer]
+OnCalendar=Tue 20:00
+Persistent=true
 
-## Why two hours
+[Install]
+WantedBy=timers.target
+```
 
-Enough runway to finish a real job, close enough that you are spending budget you were about to lose. Both numbers are yours to change: `lead_minutes` in `claude.conf`.
+```bash
+systemctl --user enable --now weekly-burn@claude.timer
+systemctl --user start weekly-burn@claude.service   # fire it once, now
+```
 
-The lead is approximate either way. Recurring schedules carry a per-job offset of up to half the period, capped at thirty minutes, so a two-hour lead can land ninety minutes out. Do not set a lead so tight that the offset eats it.
+`Persistent=true` catches up a missed run after a reboot, and `burn.sh` handles a late catch-up by checking whether the window is still open.
+
+## Anywhere with cron
+
+```cron
+0 20 * * 2 CLAUDE_BIN=/home/you/.local/bin/claude /absolute/path/to/repo/scripts/burn.sh claude
+16 7 * * 5 CODEX_BIN=/home/you/.local/bin/codex /absolute/path/to/repo/scripts/burn.sh codex
+```
+
+cron's environment is smaller than you expect, so set the binary paths inline. cron skips a run entirely when the machine is off; nothing catches it up.
+
+## Windows
+
+Task Scheduler, running `scripts/burn.sh` through WSL or Git Bash. Nobody has tested this. Say so to the user rather than implying it works.
+
+## When it fails
+
+`burn.sh` writes every event to `~/.local/state/weekly-burn/last-run.log` and raises a desktop notification on an abort or a non-deadline failure. It uses `alert_command` from the provider's conf when set, otherwise `osascript` on macOS or `notify-send` on Linux.
+
+Set `alert_command` to reach yourself some other way. The command runs with `WEEKLY_BURN_MESSAGE` and `WEEKLY_BURN_PROVIDER` in its environment:
+
+```ini
+alert_command=curl -s -X POST -d "$WEEKLY_BURN_MESSAGE" https://example.com/hook
+```
+
+A silent failure is the worst outcome here, because you find out a week later by noticing the quota went unspent again.
 
 ## Drift and re-arming
 
-The schedule encodes one week's reset time. Buying a reset, changing plans, or having usage credited moves the real window, and the recorded `reset_anchor` goes stale.
+The schedule encodes one week's reset time. Buying a reset, changing plans, or having usage credited moves the window, and `reset_anchor` in the conf goes stale.
 
-So the burner re-reads the live reset at every fire and compares it against `reset_anchor`. Past fifteen minutes of drift it rebuilds the trigger for the new anchor and writes the new anchor and id back to `claude.conf`. Under fifteen minutes it leaves the schedule alone.
+So the burner compares the live reset against `reset_anchor` at every fire. Past fifteen minutes of drift it rebuilds the schedule for the new anchor and writes the new anchor back. Under fifteen minutes it leaves the schedule alone.

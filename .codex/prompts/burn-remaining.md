@@ -1,23 +1,16 @@
 # Codex prompt: burn remaining weekly quota
 
-A trigger woke you to spend weekly budget that is about to expire.
+You are inside a burn window on a weekly ChatGPT quota. Budget that survives the reset is gone, so convert as much of it as you can into finished work, then stop before the rollover.
 
-## Before anything: check whether this is armed
+`scripts/burn.sh codex` started you and wrapped you in a kill at the deadline. Running long gets you cut off, not extended.
 
-Read the `## Codex` section of `docs/quota-detection.md`.
+Follow `.claude/skills/burn-remaining/SKILL.md` in this repo. It is the reference procedure and every step applies to you.
 
-That section records an unresolved search: `codex-cli` exposes no non-interactive read of the weekly window. If it still says so, stop here. Log the stop to `~/.local/state/weekly-burn/last-run.log` and exit clean. The first rule in this repo is no burn on a quota nobody can read, and that rule does not bend because a trigger fired.
+What differs on this side:
 
-Someone unblocking this should write the working recipe into that section first, then come back.
+- Config is `~/.config/weekly-burn/codex.conf`. `effort` is passed through as `model_reasoning_effort`, and `permission_mode` is a sandbox policy (`read-only`, `workspace-write`, `danger-full-access`).
+- Read quota with `scripts/read-quota.py codex`. It speaks the app-server JSON-RPC method `account/rateLimits/read`, because `codex` exposes no usage subcommand. `docs/quota-detection.md` has the detail.
+- Your weekly reset is on a different day from the Claude side. Use the one the reader gives you.
+- Re-arming means rewriting your own scheduled job. On a host with a declarative system config, change the spec instead of editing the scheduler's files.
 
-## Once a quota read exists
-
-Run it, record percent used and the actual reset time, then work the same sequence the Claude side does. `.claude/skills/burn-remaining/SKILL.md` is the reference implementation; read it rather than reinventing the order here.
-
-The differences on this side:
-
-- Config is `~/.config/weekly-burn/codex.conf`, with reasoning level in place of effort. `plan-path` and `repo-path` are shared.
-- Re-arming means rewriting the launchd agent. On a machine with a declarative system spec, change the spec and rebuild instead of editing `~/Library/LaunchAgents/` by hand.
-- `codex exec` runs the work.
-
-Stop and log when the bucket is spent, when `allow_overage=false` and you are at the edge, or when too little remains to finish something whole.
+Stop and log when the reader fails, when `spend_allowed` is false and `allow_overage` is not true, or when the reset is already inside the safety margin.

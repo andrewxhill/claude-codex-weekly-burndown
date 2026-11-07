@@ -1,79 +1,85 @@
 # Quota detection
 
-The burner reads live quota at every fire and never trusts a date written down a week earlier. This file holds the recipe it follows. Update this file when a provider rewords its output; the burner reads it at runtime, so a reword is a docs fix rather than a code change.
+Every fire reads the live window. Nothing in this repo trusts a reset time written down a week earlier.
 
-One exception, on purpose: `scripts/burn-wrapper.sh` pulls the percentage out of `/usage` itself, because a wrapper that cannot see the quota cannot refuse to spend past it. That is the only number baked into code, and it fails closed when the pattern stops matching.
+`scripts/read-quota.py <provider>` is the one place that reads it, and it prints the same shape for both providers:
+
+```json
+{
+  "provider": "claude",
+  "used_percent": 27,
+  "resets_at_iso": "2026-11-11T02:00:00-08:00",
+  "window_duration_mins": 10080,
+  "spend_allowed": true,
+  "detail": "bucket=all models buckets_seen=['all models', 'fable']"
+}
+```
+
+Both numbers have to be machine readable. The runner turns `resets_at_iso` into a hard deadline and kills the burner at it, and you cannot compute a timeout from prose. When a provider reworks its output the reader exits non-zero with the reason, the runner refuses to spend, and you get a notification. It never guesses.
 
 ## Claude
 
 Verified against Claude Code 2.1.319 on 2026-11-06.
 
-### Command
-
 ```bash
 claude -p "/usage" --model haiku
 ```
 
-Slash commands work in print mode. Pin the model to `haiku` so reading the meter costs almost nothing.
-
-### Output
+Slash commands work in print mode. Pinning to `haiku` makes reading the meter almost free.
 
 ```
 You are currently using your subscription to power your Claude Code usage
 
-Current week (all models): 24% used · resets Nov 11 at 2am (America/Los_Angeles)
+Current week (all models): 27% used · resets Nov 11 at 2am (America/Los_Angeles)
 Current week (Fable): 6% used · resets Nov 11 at 1:59am (America/Los_Angeles)
-
-What's contributing to your usage?
-Approximate · sessions on this machine only · shares overlap
-...
 ```
 
-### What you get, and what you do not
+Claude Code reports **percent of the weekly bucket used**. No token count appears anywhere, and no flag or subcommand exposes one: `claude --help` lists no `usage`, `quota`, or `limit` command, and `~/.claude.json` caches per-project cost totals rather than the weekly window. Write percentages in anything you add here.
 
-Claude Code reports **percent of the weekly bucket already used**. There is no token count anywhere in this output, and no CLI flag or subcommand exposes one. `claude --help` lists no `usage`, `quota`, or `limit` command, and `~/.claude.json` caches per-project cost totals rather than the weekly window. Write "percent used" in anything you add here. A plan written around a token count needs rewriting.
+Two buckets meter separately. `all models` covers everything; `Fable` has its own allowance. The reader takes whichever of the two relevant buckets is further along, so a Fable model does not get waved through on the strength of the all-models number.
 
-Two buckets reset on their own clocks:
-
-- `all models` covers everything.
-- `Fable` has a separate allowance.
-
-The bucket you drain depends on the model in `claude.conf`. Check `all models` always, and check `Fable` too when the configured model is a Fable.
-
-### Parsing the reset time
-
-`resets Nov 11 at 2am (America/Los_Angeles)` carries no year. Take the year from today's date, and if the parsed date lands in the past, roll it forward one year. The timezone sits in the parentheses; use it rather than assuming the machine's zone.
-
-Treat the whole string as prose that Anthropic may reword. Match loosely, and when a match fails, stop instead of guessing.
-
-### Reset cadence
-
-Weekly, on a day and hour particular to the account. The example above resets Wednesday at 2am Los Angeles time. Do not assume Sunday, and do not copy another account's day. Read it.
-
-### When the read fails
-
-Fail closed. An unknown quota means no burn:
-
-1. Append the failure to `~/.local/state/weekly-burn/last-run.log`.
-2. Skip the job. A partial burn against an unknown budget is worse than a skipped week.
-3. Exit non-zero so the trigger's own logs show it.
-
-The wrapper does not retry. The launchd trigger fires weekly, a failed read almost always means `/usage` changed shape, and fifteen minutes will not fix that. Read the log, fix this file, run the wrapper by hand.
+The reset string carries no year, so the reader takes the current year and rolls forward when that lands in the past. The timezone sits in the parentheses and gets used as given.
 
 ## Codex
 
-Unresolved as of 2026-11-06, against `codex-cli 0.166.0`.
+Verified against codex-cli 0.166.0 on 2026-11-06.
 
-No non-interactive quota surface turned up. `codex --help` lists no `usage`, `status`, `limit`, or `quota` subcommand, and nothing in the flag list reports the weekly window. The subcommands that exist cover sessions, auth, MCP, plugins, sandboxing, and cloud tasks.
+There is no `usage` subcommand, and `codex exec --json` reports per-turn tokens with no weekly window. The numbers live in the app-server's JSON-RPC API, so the reader speaks that protocol over stdio:
 
-Candidates for whoever picks this up:
+```
+→ {"id":1,"method":"initialize","params":{"clientInfo":{"name":"weekly-burn","version":"1.0.0"},
+                                          "capabilities":{"experimentalApi":true}}}
+→ {"id":2,"method":"account/rateLimits/read","params":null}
+```
 
-- `codex doctor`, which diagnoses install, config, auth, and runtime health, and may print limit state.
-- The interactive TUI's own status display, if it can be driven non-interactively.
-- Files under `~/.codex/`, checked for a cached limit window.
+The response carries a `rateLimits` snapshot holding two windows, `primary` and `secondary`. Each has `usedPercent`, `resetsAt` as a unix epoch, and `windowDurationMins`.
 
-Until one of those pans out, the Codex burner cannot satisfy the fail-closed rule above, so setup should not arm it. Say that to the user rather than wiring a trigger that spends against a quota nobody can read.
+**Match the weekly window on its declared duration, not on its slot.** On this account the weekly window arrived as `primary` with `windowDurationMins: 10080`, which is not where you would guess. The slots have moved before, and picking the wrong one spends real budget against the wrong clock.
 
-## Codex global skill
+A real reading from this account:
 
-Codex does not read `~/.agents/skills` the way Claude Code does. Record here what surface you used to expose `add-job-to-burn-plan` to Codex sessions, once you have confirmed one works.
+```json
+{"used_percent": 5, "resets_at_iso": "2026-11-13T21:16:04+00:00",
+ "window_duration_mins": 10080, "detail": "slot=primary plan=prolite ordinary_usage_allowed=True"}
+```
+
+`ordinaryUsageAllowed` sits on the response, and the protocol schema says outright that clients must not infer recovery from percentages or reset times. So the reader trusts that flag over the number when it says no.
+
+Regenerate the protocol schema when something stops matching:
+
+```bash
+codex app-server generate-json-schema --out /tmp/codex-schema
+grep -rl 'GetAccountRateLimits' /tmp/codex-schema
+```
+
+`codex app-server` is marked experimental. Expect it to move, and re-verify before blaming the burner.
+
+## When a read fails
+
+Fail closed. An unknown budget means no burn:
+
+1. `read-quota.py` exits non-zero with the reason on stderr.
+2. `burn.sh` logs the abort to `~/.local/state/weekly-burn/last-run.log` and raises a notification.
+3. Nothing runs. A partial burn against an unknown budget is worse than a skipped week.
+
+No retry loop. A failed read almost always means the provider changed shape, and waiting fifteen minutes will not fix that. Read the log, fix this file and the reader, run `scripts/burn.sh <provider>` by hand.

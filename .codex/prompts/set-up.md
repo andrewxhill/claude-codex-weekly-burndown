@@ -1,13 +1,11 @@
 # Codex prompt: set up weekly burn
 
-Follow `AGENTS.md` in the repo root. Read `CLAUDE.md` as well; the project description there covers both agents.
+Follow `.claude/skills/set-up/SKILL.md`. It is the reference procedure for both agents, and every step applies here with `effort` read as reasoning level and `permission_mode` read as a sandbox policy.
 
-Read `.claude/skills/set-up/SKILL.md` too. It is the reference setup procedure, and the questions it asks apply here unchanged except that reasoning level stands in for effort.
+Read `AGENTS.md` for what differs on the Codex side, and `CLAUDE.md` for the project description.
 
 Ask the user's choices in a single batch, not one at a time.
 
-Start by reading the `## Codex` section of `docs/quota-detection.md`. While it lists the Codex quota read as unresolved, tell the user plainly that the Codex burner cannot be armed yet and offer to wire the Claude side instead. Do not install a trigger that would fire against a quota you cannot read.
-
-Do not run the burner at the end. Verification is structural, and a dry first fire is what proves the trigger.
+Do not let a real burn run at the end. A dry fire through the scheduler is the proof.
 
 Stop and report the exact failure if a step fails. Do not patch around it.

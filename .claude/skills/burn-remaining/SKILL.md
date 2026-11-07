@@ -1,66 +1,73 @@
 ---
 name: burn-remaining
-description: Spend remaining weekly tokens on the top job in the burn plan. Fires about two hours before each weekly quota reset. Use when a scheduled trigger wakes you, when the user says "burn my remaining tokens", or when quota is close to resetting and the user wants the top backlog item cleared.
+description: Spend the remaining weekly quota on jobs from the burn plan during the window before a reset. Use when a scheduled trigger wakes you, when the user says "burn my remaining tokens", or when a weekly quota is about to reset and the user wants backlog cleared.
 ---
 
-A trigger woke you to spend weekly budget that is about to expire. Work through these steps in order.
+You are inside a burn window. Quota that survives the reset is gone, so the job is to convert as much of it as possible into finished work, then stop before the rollover.
 
-`scripts/burn-wrapper.sh` has already read the quota and cleared the spend guard when a launchd trigger started you. Re-read it anyway. You need the reset time, and a human who ran you by hand skipped the wrapper entirely.
+`scripts/burn.sh` started you and told you the deadline. It also wrapped you in a kill at that deadline, so running long does not get you extra time, it gets you cut off mid-sentence. Work accordingly.
+
+A human may have invoked you directly instead, in which case nothing has been read yet and no deadline is enforced. Check which situation you are in.
 
 ## 1. Resolve config
 
-Read these, and stop if any is missing rather than guessing a default:
+Read these and stop if any is missing, rather than assuming a default:
 
-- `~/.config/weekly-burn/plan-path` for the plan. Job briefs sit at `<dirname>/jobs/<slug>/readme.md`.
+- `~/.config/weekly-burn/plan-path` for the plan. Briefs are at `<dirname>/jobs/<slug>/readme.md`.
 - `~/.config/weekly-burn/repo-path` for this repo.
-- `~/.config/weekly-burn/claude.conf` for `model`, `effort`, `dry_run`, `allow_overage`, `reset_anchor`, `lead_minutes`, `trigger`, `trigger_id`.
+- `~/.config/weekly-burn/<provider>.conf` for `model`, `effort`, `dry_run`, `allow_overage`, `window_hours`, `stop_margin_minutes`, `reset_anchor`, `trigger`, `trigger_id`.
 
 `docs/config.md` documents every key.
 
-## 2. Read live quota
+## 2. Confirm the window
 
-Follow the `## Claude` section of `docs/quota-detection.md` in the repo at `repo-path`. Record the percent used and the reset time with its timezone.
+Run `scripts/read-quota.py <provider>` from `repo-path`. You need the reset time and the percentage even when the runner already read them, because your deadline arithmetic depends on them and a human-invoked run has neither.
 
-Stop and log when any of these holds:
+Stop and log when:
 
-- The read fails or the output no longer matches what the doc describes. Fail closed; `docs/quota-detection.md` explains why.
-- The bucket for your configured model sits at 100% and `allow_overage=false`.
-- Too little budget remains to finish anything whole. A half-done job costs more to pick up than it saved.
+- The read fails. Fail closed; `docs/quota-detection.md` says why.
+- `spend_allowed` is false and `allow_overage` is not true.
+- The reset is already inside `stop_margin_minutes`. The window is gone.
 
 ## 3. Honor `dry_run`
 
-With `dry_run=true`: log the quota reading, name the top job you would have taken, and exit without touching it. The user is watching one fire land before arming the thing. Do not decide on their behalf that the real run is fine.
+With `dry_run=true`: log the reading, name the job you would have taken, and exit without touching it. Someone is watching one fire land before arming this. Do not decide for them that the real thing is fine.
 
-## 4. Take the top job
+## 4. Work the plan from the top, repeatedly
 
-Read the plan at `plan-path`. Take the first row under `## Open jobs, highest priority first` whose `[expires YYYY-MM-DD]` is still in the future.
+This is a window, not a single errand. Keep taking jobs until the budget runs out or the deadline gets close.
 
-Rows that expired get dropped: prepend each to `## Completed, newest first` as abandoned, dated today, and say in the sentence that nobody reached it. Then exit if nothing live is left.
+For each pass:
 
-Open the row's `jobs/<slug>/readme.md` for the brief. The row is a handle; the brief is the spec. A row whose brief is missing is broken, not an invitation to invent the work. Log it and move to the next row.
+1. Read the plan. Take the first row under `## Open jobs, highest priority first` whose `[expires YYYY-MM-DD]` is still ahead of today.
+2. Drop expired rows as you meet them: prepend each to `## Completed, newest first`, dated today, saying nobody reached it.
+3. Open the row's `jobs/<slug>/readme.md`. The row is a handle; the brief is the spec. A row with no brief is broken, so log it and move to the next row rather than inventing the work.
+4. Do the job. Commit as you go. Move the row to Completed with a one-sentence outcome.
+5. Check the clock and the quota, then decide whether another job fits.
 
-## 5. Do the work
+Start nothing you cannot land. Before picking up a job, ask whether there is time to leave it finished or at least committed and coherent. When the honest answer is no, stop and write up what you did. Half a job is worse than an unspent hour, because someone has to work out where you got to.
 
-Run at the `model` and `effort` from `claude.conf`. The window is closing, so use the budget.
+## 5. Do the work properly
 
-Hold the brief's scope. The brief names its boundaries because nobody is awake to catch you widening them. Load the `engineering-discipline` skill and work to it: a failing test before a bug fix, the project's own quality gate before any claim that this is done.
+Run at the `model` and `effort` from the conf. The budget exists to be spent, so use it on depth rather than haste.
 
-Commit as you go. Push only when the brief says to.
+Hold each brief's scope. The brief names its boundaries because nobody is awake to catch you widening them. Load the `engineering-discipline` skill and work to it: a failing test before a bug fix, the project's own gate before any claim that something is done.
 
-## 6. Record what happened
+Push only when a brief says to.
 
-Whether the job finished or the window shut first:
+## 6. Record as you go, not at the end
 
-- Move the row from Open to the top of `## Completed, newest first`, dated today, with one sentence on what shipped. An abandoned job says so plainly.
-- Append a line to `~/.local/state/weekly-burn/last-run.log`: what you read, what you took, where it ended.
+A kill at the deadline takes anything you were saving up. So after each job, before starting the next:
 
-Report the outcome you actually got. A job you got halfway through is a job you got halfway through.
+- Update the plan.
+- Append to `~/.local/state/weekly-burn/last-run.log`: what you read, what you took, how it ended.
+
+Report what you actually got. A job you got halfway through is a job you got halfway through.
 
 ## 7. Re-arm if the window moved
 
-Compare the live reset time from step 2 against `reset_anchor` in `claude.conf`. Within fifteen minutes, leave it alone; the schedule re-fires on its own.
+Compare the live reset against `reset_anchor` in the conf. Within fifteen minutes, leave it alone.
 
-Past fifteen minutes, rebuild the trigger for `new_reset - lead_minutes`, then write the new `reset_anchor` and `trigger_id` back to `claude.conf`. How you rebuild depends on `trigger`:
+Past fifteen minutes, rebuild the schedule for `new_reset - window_hours` and write the new `reset_anchor` back. `docs/scheduling.md` has the mechanics for each scheduler. On a host with a declarative system config, change the spec rather than editing the scheduler's files by hand.
 
-- `launchd`: rewrite the plist through whatever owns it. On a machine with a declarative system spec, change the spec and rebuild rather than editing `~/Library/LaunchAgents/` by hand. `docs/scheduling.md` covers this.
-- `cloud-routine`: you cannot re-arm yourself from here. Log the drift and tell the user what the new anchor should be.
+Do this early in the run, not at the end, where the deadline will eat it.

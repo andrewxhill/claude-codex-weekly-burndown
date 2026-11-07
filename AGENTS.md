@@ -4,21 +4,17 @@ Context for Codex CLI sessions in this repo. Read `CLAUDE.md` too; the project d
 
 **Setting it up?** Follow `.codex/prompts/set-up.md`.
 
-## Status of the Codex side
+## What differs on the Codex side
 
-Blocked, and honestly so. `docs/quota-detection.md` records the search: `codex-cli 0.166.0` exposes no non-interactive way to read the weekly window. No `usage`, `status`, `limit`, or `quota` subcommand exists, and no flag reports it.
+The Codex quota read works. `codex` has no `usage` subcommand, so `scripts/read-quota.py codex` speaks the app-server JSON-RPC method `account/rateLimits/read` and prints the same shape the Claude side prints. `docs/quota-detection.md` has the protocol detail and the command that regenerates the schema when it moves.
 
-That matters because the repo's first rule is to fail closed on an unreadable quota. A Codex burner today would fire against a budget it cannot see. Setup should tell the user that and leave the Codex trigger unarmed.
+**Different reset day.** This account's Codex week and Claude week land on different days, so the two providers get separate confs, separate anchors, and separate scheduled jobs. Never copy one provider's day to the other.
 
-Unblock it by finding a quota surface and writing it into the `## Codex` section of `docs/quota-detection.md`. The candidates listed there: `codex doctor`, driving the TUI's status display non-interactively, and cached limit state under `~/.codex/`.
+**Scheduling.** Codex has no in-session scheduler and no cloud routines, so a host scheduler is the only option: launchd, a systemd timer, or cron. `scripts/burn.sh codex` is the entry point, same as the Claude side.
 
-## What differs from the Claude side
+**Config.** `~/.config/weekly-burn/codex.conf`, same shape as `claude.conf` in `docs/config.md`. `effort` is passed through as `model_reasoning_effort`; `permission_mode` is a sandbox policy (`read-only`, `workspace-write`, `danger-full-access`).
 
-**Triggering.** Codex has no in-session scheduler and no cloud routines, so the local launchd path is the only one. `scripts/burn-wrapper.sh` is Claude-specific; Codex needs its own entry point calling `codex exec` with the `burn-remaining` prompt, the configured model, and the reasoning level from `codex.conf`.
-
-**Skill discovery.** Codex does not read `~/.agents/skills` the way Claude Code does, so `scripts/install-global-skill.sh` alone leaves `add-job-to-burn-plan` invisible to Codex sessions. Find the surface Codex honors, check `codex --help`, `~/.codex/config.toml`, and `~/.codex/AGENTS.md`, confirm it triggers, then record what worked under `## Codex global skill` in `docs/quota-detection.md`.
-
-**Config.** `~/.config/weekly-burn/codex.conf`, same shape as `claude.conf` in `docs/config.md`, with reasoning level in place of effort. `plan-path` and `repo-path` are shared.
+**Skill discovery.** Codex does not read `~/.agents/skills` the way Claude Code does, so `scripts/install-global-skill.sh` alone leaves `add-job-to-burn-plan` invisible to Codex sessions. Find the surface Codex honors, check `codex --help`, `~/.codex/config.toml`, and `~/.codex/AGENTS.md`, confirm it triggers, then record what worked in `docs/quota-detection.md` under a Codex note. The burner itself does not depend on this; it reads the prompt file directly.
 
 ## Rules that bite
 

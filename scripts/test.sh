@@ -1,175 +1,202 @@
 #!/usr/bin/env bash
-# Quality gate for this repo. Runs every check, prints a summary, exits non-zero on
-# the first failure class found. No network, no token spend: `claude` is stubbed.
+# Quality gate. Stubs every provider binary, so it spends nothing and needs no network.
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-pass=0
-fail=0
+pass=0; fail=0
+ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
+bad() { fail=$((fail+1)); printf '  FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf '       %s\n' "$2"; return 0; }
 
-ok()   { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
-bad()  { fail=$((fail+1)); printf '  FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf '       %s\n' "$2"; }
-
-# --- shellcheck-style syntax check on every script -------------------------
-printf '\nshell syntax\n'
+printf '\nsyntax\n'
 while IFS= read -r f; do
-  if bash -n "$f" 2>/dev/null; then ok "$(basename "$f") parses"; else bad "$(basename "$f") parses" "$(bash -n "$f" 2>&1 | head -3)"; fi
+  bash -n "$f" 2>/dev/null && ok "$(basename "$f")" || bad "$(basename "$f")" "$(bash -n "$f" 2>&1 | head -2)"
 done < <(find "$repo_root/scripts" -name '*.sh' -type f | sort)
+python3 -I -m py_compile "$repo_root/scripts/read-quota.py" 2>/dev/null && ok "read-quota.py" || bad "read-quota.py compiles"
 
-# --- docs must not promise a quota field the tooling does not expose -------
 printf '\ndocs match reality\n'
-if grep -rniE 'tokens remaining' "$repo_root/docs" "$repo_root/.claude" "$repo_root/.codex" "$repo_root"/*.md >/dev/null 2>&1; then
-  bad "no 'tokens remaining' claims" "/usage reports percent used, not a token count"
-else
-  ok "no 'tokens remaining' claims"
-fi
+grep -rqniE 'tokens remaining' "$repo_root/docs" "$repo_root/.claude" "$repo_root/.codex" "$repo_root"/*.md 2>/dev/null \
+  && bad "no token-count claims" "providers report percent used" || ok "no token-count claims"
+grep -rqniE 'every Sunday' "$repo_root"/*.md 2>/dev/null \
+  && bad "no hardcoded reset weekday" || ok "no hardcoded reset weekday"
+grep -rqn 'burn-wrapper' "$repo_root" --include='*.md' 2>/dev/null \
+  && bad "no stale burn-wrapper references" || ok "no stale burn-wrapper references"
 
-if grep -rniE 'every Sunday' "$repo_root"/*.md >/dev/null 2>&1; then
-  bad "no hardcoded reset weekday" "reset day is per-account; read it live"
-else
-  ok "no hardcoded reset weekday"
-fi
-
-# --- PLAN.md in the public repo must carry no live job rows ----------------
 printf '\npublic plan is inert\n'
-live_rows="$(grep -cE '^- \[ \] \[expires' "$repo_root/PLAN.md" 2>/dev/null || true)"
-if [ "${live_rows:-0}" -eq 0 ]; then
-  ok "published PLAN.md has no open rows"
-else
-  bad "published PLAN.md has no open rows" "$live_rows live row(s); real queue lives at plan-path"
-fi
-
-# --- every jobs/<slug> link in PLAN.md must resolve ------------------------
+rows="$(grep -cE '^- \[[ x]\]' "$repo_root/PLAN.md" 2>/dev/null || true)"
+[ "${rows:-0}" -eq 0 ] && ok "published PLAN.md carries no rows" || bad "published PLAN.md carries no rows" "$rows rows"
 dangling=0
 while IFS= read -r slug; do
-  [ -f "$repo_root/$slug" ] || { dangling=$((dangling+1)); printf '       dangling: %s\n' "$slug"; }
+  [ -f "$repo_root/$slug" ] || dangling=$((dangling+1))
 done < <(grep -oE 'jobs/[a-z0-9-]+/readme\.md' "$repo_root/PLAN.md" 2>/dev/null | sort -u)
-if [ "$dangling" -eq 0 ]; then ok "no dangling job links"; else bad "no dangling job links" "$dangling broken"; fi
+[ "$dangling" -eq 0 ] && ok "no dangling job links" || bad "no dangling job links" "$dangling"
 
-# --- wrapper behavior ------------------------------------------------------
-printf '\nburn-wrapper\n'
-wrapper="$repo_root/scripts/burn-wrapper.sh"
+# --- runner --------------------------------------------------------------
+runner="$repo_root/scripts/burn.sh"
 
 setup_sandbox() {
   sandbox="$(mktemp -d)"
-  export WEEKLY_BURN_CONFIG_DIR="$sandbox/config"
-  export WEEKLY_BURN_STATE_DIR="$sandbox/state"
-  mkdir -p "$WEEKLY_BURN_CONFIG_DIR" "$sandbox/bin" "$sandbox/plan"
-  # stub claude so no test ever spends a token
-  cat > "$sandbox/bin/claude" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$CLAUDE_STUB_LOG"
-case "$*" in
-  *"/usage"*) printf 'Current week (all models): %s%% used · resets Nov 11 at 2am (America/Los_Angeles)\n' "${CLAUDE_STUB_PCT:-24}" ;;
-  *) printf 'stub burn run\n' ;;
-esac
+  export WEEKLY_BURN_CONFIG_DIR="$sandbox/config" WEEKLY_BURN_STATE_DIR="$sandbox/state"
+  mkdir -p "$WEEKLY_BURN_CONFIG_DIR" "$sandbox/bin" "$sandbox/plan" "$sandbox/fakerepo/.codex/prompts"
+  export STUB_LOG="$sandbox/calls.log"; : > "$STUB_LOG"
+  : > "$sandbox/fakerepo/.codex/prompts/burn-remaining.md"
+  # stub read-quota.py so the gate never touches a real account
+  cat > "$sandbox/bin/read-quota.py" <<'STUB'
+#!/usr/bin/env python3
+import json, os, sys
+from datetime import datetime, timedelta, timezone
+print(json.dumps({
+  "provider": sys.argv[1],
+  "used_percent": int(os.environ.get("STUB_PCT", "20")),
+  "resets_at_iso": os.environ.get("STUB_RESET") or (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+  "window_duration_mins": 10080,
+  "spend_allowed": os.environ.get("STUB_ALLOWED", "True") == "True",
+  "detail": "stub",
+}))
 STUB
-  chmod +x "$sandbox/bin/claude"
-  export CLAUDE_STUB_LOG="$sandbox/claude-calls.log"
-  : > "$CLAUDE_STUB_LOG"
+  chmod +x "$sandbox/bin/read-quota.py"
+  for b in claude codex; do
+    cat > "$sandbox/bin/$b" <<'STUB'
+#!/usr/bin/env bash
+printf '%s %s\n' "$(basename "$0")" "$*" >> "$STUB_LOG"
+echo "stub ran"
+STUB
+    chmod +x "$sandbox/bin/$b"
+  done
   export PATH="$sandbox/bin:$PATH"
+  # the runner finds read-quota.py beside itself, so give it a scripts dir
+  mkdir -p "$sandbox/scripts"; cp "$runner" "$sandbox/scripts/"; cp "$sandbox/bin/read-quota.py" "$sandbox/scripts/"
+  runner_under_test="$sandbox/scripts/burn.sh"
   printf '%s\n' "$sandbox/plan/PLAN.md" > "$WEEKLY_BURN_CONFIG_DIR/plan-path"
-  printf '%s\n' "$repo_root" > "$WEEKLY_BURN_CONFIG_DIR/repo-path"
-  cat > "$WEEKLY_BURN_CONFIG_DIR/claude.conf" <<'CONF'
-model=claude-opus-5
+  printf '%s\n' "$sandbox/fakerepo" > "$WEEKLY_BURN_CONFIG_DIR/repo-path"
+  printf '# plan\n\n## Open jobs, highest priority first\n\n- [ ] [expires 2099-01-01] Do the thing ([jobs/thing](jobs/thing/readme.md)).\n' > "$sandbox/plan/PLAN.md"
+  for p in claude codex; do
+    cat > "$WEEKLY_BURN_CONFIG_DIR/$p.conf" <<CONF
+model=test-model
 effort=high
-permission_mode=acceptEdits
+permission_mode=$([ "$p" = codex ] && echo workspace-write || echo acceptEdits)
+window_hours=6
+stop_margin_minutes=5
 dry_run=false
 allow_overage=false
 CONF
-  printf '# Weekly burn plan\n\n## Open jobs, highest priority first\n\n- [ ] [expires 2099-01-01] Do the thing ([jobs/thing](jobs/thing/readme.md)).\n' > "$sandbox/plan/PLAN.md"
+  done
 }
-teardown_sandbox() { rm -rf "$sandbox"; unset WEEKLY_BURN_CONFIG_DIR WEEKLY_BURN_STATE_DIR CLAUDE_STUB_LOG CLAUDE_STUB_PCT; }
+teardown_sandbox() {
+  rm -rf "$sandbox"
+  unset WEEKLY_BURN_CONFIG_DIR WEEKLY_BURN_STATE_DIR STUB_LOG STUB_PCT STUB_RESET STUB_ALLOWED
+}
 
-# missing config must fail loudly and spend nothing
+printf '\nrunner: refusals\n'
 setup_sandbox
+out="$("$runner_under_test" 2>&1)"; rc=$?
+[ "$rc" -eq 2 ] && ok "no provider argument is a usage error" || bad "no provider argument is a usage error" "rc=$rc"
+out="$("$runner_under_test" gemini 2>&1)"; rc=$?
+[ "$rc" -eq 2 ] && ok "unknown provider is a usage error" || bad "unknown provider is a usage error" "rc=$rc"
 rm "$WEEKLY_BURN_CONFIG_DIR/claude.conf"
-out="$("$wrapper" 2>&1)"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'claude.conf'; then ok "missing claude.conf fails loudly"; else bad "missing claude.conf fails loudly" "rc=$rc out=$out"; fi
-[ ! -s "$CLAUDE_STUB_LOG" ] && ok "missing config spends nothing" || bad "missing config spends nothing" "invoked claude"
+out="$("$runner_under_test" claude 2>&1)"; rc=$?
+{ [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'claude.conf'; } && ok "missing conf names the file" || bad "missing conf names the file" "rc=$rc $out"
+[ ! -s "$STUB_LOG" ] && ok "missing conf spends nothing" || bad "missing conf spends nothing" "$(cat "$STUB_LOG")"
 teardown_sandbox
 
-# missing plan must fail loudly
 setup_sandbox
 rm "$sandbox/plan/PLAN.md"
-out="$("$wrapper" 2>&1)"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'plan'; then ok "missing plan fails loudly"; else bad "missing plan fails loudly" "rc=$rc out=$out"; fi
+out="$("$runner_under_test" claude 2>&1)"; rc=$?
+{ [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'no plan'; } && ok "missing plan refuses" || bad "missing plan refuses" "rc=$rc $out"
 teardown_sandbox
 
-# dry run reads quota, logs, and never starts a burn
+printf '\nrunner: the burn window\n'
 setup_sandbox
-sed -i.bak 's/^dry_run=false/dry_run=true/' "$WEEKLY_BURN_CONFIG_DIR/claude.conf"
-out="$("$wrapper" 2>&1)"; rc=$?
-[ "$rc" -eq 0 ] && ok "dry run exits clean" || bad "dry run exits clean" "rc=$rc out=$out"
-if grep -q '/usage' "$CLAUDE_STUB_LOG" && ! grep -q 'burn-remaining' "$CLAUDE_STUB_LOG"; then
-  ok "dry run reads quota without burning"
-else
-  bad "dry run reads quota without burning" "$(cat "$CLAUDE_STUB_LOG")"
-fi
-[ -s "$WEEKLY_BURN_STATE_DIR/last-run.log" ] && ok "dry run writes the log" || bad "dry run writes the log" "no last-run.log"
+out="$("$runner_under_test" claude 2>&1)"
+calls="$(cat "$STUB_LOG")"
+printf '%s' "$calls" | grep -q -- '--model test-model' && ok "claude gets the configured model" || bad "claude gets the configured model" "$calls"
+printf '%s' "$calls" | grep -q -- '--permission-mode acceptEdits' && ok "claude gets the permission mode" || bad "claude gets the permission mode" "$calls"
+printf '%s' "$calls" | grep -q '/burn-remaining' && ok "claude is handed the skill" || bad "claude is handed the skill" "$calls"
+printf '%s' "$out" | grep -qE '[0-9]+h[0-9]+m until hard stop' && ok "logs the time left before the hard stop" || bad "logs the time left before the hard stop" "$out"
 teardown_sandbox
 
-# live run invokes the burner with the configured model, effort and plan dir
 setup_sandbox
-out="$("$wrapper" 2>&1)"; rc=$?
-[ "$rc" -eq 0 ] && ok "live run exits clean" || bad "live run exits clean" "rc=$rc out=$out"
-calls="$(cat "$CLAUDE_STUB_LOG")"
-for needle in '/burn-remaining' '--model claude-opus-5' '--effort high' '--permission-mode acceptEdits' '--add-dir'; do
-  printf '%s' "$calls" | grep -q -- "$needle" && ok "live run passes $needle" || bad "live run passes $needle" "$calls"
-done
+out="$("$runner_under_test" codex 2>&1)"
+calls="$(cat "$STUB_LOG")"
+printf '%s' "$calls" | grep -q 'codex exec' && ok "codex runs through exec" || bad "codex runs through exec" "$calls"
+printf '%s' "$calls" | grep -q -- '--sandbox workspace-write' && ok "codex gets the sandbox mode" || bad "codex gets the sandbox mode" "$calls"
+printf '%s' "$calls" | grep -q 'model_reasoning_effort' && ok "codex gets the reasoning effort" || bad "codex gets the reasoning effort" "$calls"
 teardown_sandbox
 
-# overage guard: at 100% used with allow_overage=false the wrapper must refuse
+# A reset already inside the safety margin means the window is gone. Starting work
+# there would run straight through the rollover, which is the one thing to avoid.
 setup_sandbox
-export CLAUDE_STUB_PCT=100
-out="$("$wrapper" 2>&1)"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'overage' && ! grep -q 'burn-remaining' "$CLAUDE_STUB_LOG"; then ok "refuses to burn into overage"; else bad "refuses to burn into overage" "rc=$rc out=$out"; fi
+export STUB_RESET="$(python3 -I -c "
+from datetime import datetime,timedelta,timezone
+print((datetime.now(timezone.utc)+timedelta(minutes=2)).isoformat())")"
+out="$("$runner_under_test" claude 2>&1)"; rc=$?
+{ [ "$rc" -eq 0 ] && ! grep -q 'burn-remaining' "$STUB_LOG"; } && ok "a closed window exits clean without working" || bad "a closed window exits clean without working" "rc=$rc $out"
+printf '%s' "$out" | grep -qi 'already closed' && ok "says why it did nothing" || bad "says why it did nothing" "$out"
 teardown_sandbox
 
-# unparseable quota must fail closed, not guess
 setup_sandbox
-cat > "$sandbox/bin/claude" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$CLAUDE_STUB_LOG"
-printf 'the format changed and says nothing useful\n'
+export STUB_RESET="2026-13-45T99:99:99"
+out="$("$runner_under_test" claude 2>&1)"; rc=$?
+{ [ "$rc" -ne 0 ] && ! grep -q 'burn-remaining' "$STUB_LOG"; } && ok "an unparseable reset time stops the run" || bad "an unparseable reset time stops the run" "rc=$rc $out"
+teardown_sandbox
+
+printf '\nrunner: spend guard\n'
+setup_sandbox
+export STUB_ALLOWED=False STUB_PCT=100
+out="$("$runner_under_test" claude 2>&1)"; rc=$?
+{ [ "$rc" -ne 0 ] && ! grep -q 'burn-remaining' "$STUB_LOG"; } && ok "refuses when the provider says no" || bad "refuses when the provider says no" "rc=$rc $out"
+teardown_sandbox
+
+setup_sandbox
+export STUB_ALLOWED=False STUB_PCT=100
+sed -i.bak 's/^allow_overage=false/allow_overage=true/' "$WEEKLY_BURN_CONFIG_DIR/claude.conf"
+out="$("$runner_under_test" claude 2>&1)"
+grep -q 'burn-remaining' "$STUB_LOG" && ok "allow_overage=true overrides the guard" || bad "allow_overage=true overrides the guard" "$out"
+teardown_sandbox
+
+setup_sandbox
+cat > "$sandbox/scripts/read-quota.py" <<'STUB'
+#!/usr/bin/env python3
+import sys; print("the output format changed", file=sys.stderr); sys.exit(1)
 STUB
-chmod +x "$sandbox/bin/claude"
-out="$("$wrapper" 2>&1)"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'unknown quota' && ! grep -q 'burn-remaining' "$CLAUDE_STUB_LOG"; then ok "fails closed on unreadable quota"; else bad "fails closed on unreadable quota" "rc=$rc out=$out"; fi
+chmod +x "$sandbox/scripts/read-quota.py"
+out="$("$runner_under_test" claude 2>&1)"; rc=$?
+{ [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'unknown'; } && ok "an unreadable quota fails closed" || bad "an unreadable quota fails closed" "rc=$rc $out"
 teardown_sandbox
 
-# a dry run never spends, so a full bucket must not turn it into an abort
+printf '\nrunner: dry run\n'
 setup_sandbox
 sed -i.bak 's/^dry_run=false/dry_run=true/' "$WEEKLY_BURN_CONFIG_DIR/claude.conf"
-export CLAUDE_STUB_PCT=100
-out="$("$wrapper" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && ! grep -q 'burn-remaining' "$CLAUDE_STUB_LOG"; then ok "dry run reports a full bucket instead of aborting"; else bad "dry run reports a full bucket instead of aborting" "rc=$rc out=$out"; fi
-printf '%s' "$out" | grep -qi 'guard' && ok "dry run names the guard verdict" || bad "dry run names the guard verdict" "$out"
+out="$("$runner_under_test" claude 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && ok "dry run exits clean" || bad "dry run exits clean" "rc=$rc $out"
+! grep -q 'burn-remaining' "$STUB_LOG" && ok "dry run starts no work" || bad "dry run starts no work" "$(cat "$STUB_LOG")"
+printf '%s' "$out" | grep -qi 'top of queue' && ok "dry run names the top job" || bad "dry run names the top job" "$out"
+printf '%s' "$out" | grep -qi 'guard would' && ok "dry run reports the guard verdict" || bad "dry run reports the guard verdict" "$out"
+[ -s "$WEEKLY_BURN_STATE_DIR/last-run.log" ] && ok "dry run writes the log" || bad "dry run writes the log"
 teardown_sandbox
 
-# launchd hands jobs a minimal PATH that excludes ~/.local/bin, so a wrapper that
-# assumes `claude` is findable dies at the first call. Fail loudly instead.
 setup_sandbox
-out="$(PATH=/usr/bin:/bin "$wrapper" 2>&1)"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qiE 'PATH|CLAUDE_BIN'; then ok "names the PATH problem when claude is unfindable"; else bad "names the PATH problem when claude is unfindable" "rc=$rc out=$out"; fi
+sed -i.bak 's/^dry_run=false/dry_run=true/' "$WEEKLY_BURN_CONFIG_DIR/claude.conf"
+export STUB_ALLOWED=False STUB_PCT=100
+out="$("$runner_under_test" claude 2>&1)"; rc=$?
+{ [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qi 'guard would BLOCK'; } && ok "dry run reports a blocking guard without aborting" || bad "dry run reports a blocking guard without aborting" "rc=$rc $out"
 teardown_sandbox
 
-# an explicit CLAUDE_BIN overrides discovery, which is what the plist will use
-setup_sandbox
-bin="$sandbox/bin/claude"
-out="$(PATH=/usr/bin:/bin CLAUDE_BIN="$bin" "$wrapper" 2>&1)"; rc=$?
-[ "$rc" -eq 0 ] && ok "CLAUDE_BIN overrides PATH discovery" || bad "CLAUDE_BIN overrides PATH discovery" "rc=$rc out=$out"
-teardown_sandbox
+printf '\nquota reader\n'
+out="$("$repo_root/scripts/read-quota.py" 2>&1)"; rc=$?
+{ [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'usage:'; } && ok "no argument prints usage" || bad "no argument prints usage" "$out"
+out="$(PATH=/usr/bin:/bin "$repo_root/scripts/read-quota.py" claude 2>&1)"; rc=$?
+{ [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qiE 'PATH|CLAUDE_BIN'; } && ok "names the PATH problem when claude is unfindable" || bad "names the PATH problem when claude is unfindable" "$out"
+out="$(PATH=/usr/bin:/bin "$repo_root/scripts/read-quota.py" codex 2>&1)"; rc=$?
+{ [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qiE 'PATH|CODEX_BIN'; } && ok "names the PATH problem when codex is unfindable" || bad "names the PATH problem when codex is unfindable" "$out"
 
-# --- install script must refuse to clobber a real directory ---------------
 printf '\ninstall-global-skill\n'
 sandbox="$(mktemp -d)"
 HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1
-link="$sandbox/.agents/skills/add-job-to-burn-plan"
-[ "$(readlink "$link")" = "$repo_root/skills/add-job-to-burn-plan" ] && ok "installs the symlink" || bad "installs the symlink" "$(ls -l "$link" 2>&1)"
-HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1 && ok "second run is idempotent" || bad "second run is idempotent"
+[ "$(readlink "$sandbox/.agents/skills/add-job-to-burn-plan")" = "$repo_root/skills/add-job-to-burn-plan" ] \
+  && ok "installs the symlink" || bad "installs the symlink"
+HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1 && ok "is idempotent" || bad "is idempotent"
 rm -rf "$sandbox/.agents/skills/add-job-to-burn-plan"; mkdir -p "$sandbox/.agents/skills/add-job-to-burn-plan"
-HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1 && bad "refuses to clobber a real dir" "exited 0" || ok "refuses to clobber a real dir"
+HOME="$sandbox" "$repo_root/scripts/install-global-skill.sh" >/dev/null 2>&1 && bad "refuses to clobber a real dir" || ok "refuses to clobber a real dir"
 rm -rf "$sandbox"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
