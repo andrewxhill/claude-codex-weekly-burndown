@@ -11,7 +11,7 @@ printf '\nsyntax\n'
 while IFS= read -r f; do
   bash -n "$f" 2>/dev/null && ok "$(basename "$f")" || bad "$(basename "$f")" "$(bash -n "$f" 2>&1 | head -2)"
 done < <(find "$repo_root/scripts" -name '*.sh' -type f | sort)
-python3 -I -m py_compile "$repo_root/scripts/read-quota.py" 2>/dev/null && ok "read-quota.py" || bad "read-quota.py compiles"
+python3 -I -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$repo_root/scripts/read-quota.py" 2>/dev/null && ok "read-quota.py" || bad "read-quota.py compiles"
 
 printf '\ndocs match reality\n'
 grep -rqniE 'tokens remaining' "$repo_root/docs" "$repo_root/.claude" "$repo_root/.codex" "$repo_root"/*.md 2>/dev/null \
