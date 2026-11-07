@@ -22,25 +22,44 @@ Read the live reset, subtract `window_hours`, convert to local time, and express
 
 A scheduled job gets a minimal environment, so set `CLAUDE_BIN` or `CODEX_BIN` to the absolute path of the binary. `which claude` in your shell is not what the scheduler sees. Everything in this repo fails with that exact complaint rather than something vague, but it still fails.
 
-## Authentication is the first thing that breaks
+## Authentication: which credential the job resolves
 
-Your shell can authenticate. A scheduled job may not, and it fails in a way that looks like something else.
+Claude Code keeps credentials in two stores on macOS, and a scheduled job can resolve a different one from your shell:
 
-**Claude Code on macOS keeps its credentials in the login keychain.** A launchd or cron job cannot read that keychain, so `claude` runs an anonymous session that does no work and prints a zero-cost summary. Verified on 2.1.319: the same command that works in a terminal returns `loggedIn: false` under launchd, with or without sudo. The first version of this repo would have installed a burner that failed silently every week.
+- the login keychain, as the generic password `Claude Code-credentials`
+- the file `~/.claude/.credentials.json`, mode 600
 
-Fix it with a long-lived token:
+It prefers the keychain whenever an item exists there. Signing out leaves that item in place holding `accessToken` and `refreshToken` as `""` with `expiresAt` 0, and an emptied item still counts as existing. A context that reads the keychain therefore picks up the empty tokens and authenticates as nobody, while a context that cannot read the keychain falls back to the file and works normally.
+
+Verified on 2.1.319. One machine, one minute apart: `claude auth status` returned `loggedIn: false` under launchd and `loggedIn: true` from a shell whose keychain access was blocked. The file held a credential minted that day; the keychain item had been empty since six weeks earlier.
+
+An anonymous session says nothing about it. `claude -p` runs, does no work, and prints a zero-cost summary, which is why `scripts/read-quota.py` checks auth before blaming the `/usage` format.
+
+Check it the way the scheduler will, then read what the job logged:
 
 ```bash
-claude setup-token          # interactive, needs a browser
+launchctl kickstart -p gui/"$(id -u)"/sh.weekly-burn.claude
 ```
 
-Put the token in the job's environment as `CLAUDE_CODE_OAUTH_TOKEN`. On a host that injects secrets into the launchd context, put it with the other secrets rather than in the plist, where it would sit in the nix store or a world-readable file.
+When the job reports `loggedIn: false` and your shell reports `true`, compare the stores:
 
-**Codex does not have this problem.** It keeps tokens in `~/.codex/auth.json`, which a scheduled job reads like any other file. Verified against 0.166.0.
+```bash
+security find-generic-password -s 'Claude Code-credentials' -w |
+  python3 -c 'import json,sys; o=json.load(sys.stdin)["claudeAiOauth"]; print("keychain token chars:", len(o.get("accessToken") or ""))'
+python3 -c 'import json,os; o=json.load(open(os.path.expanduser("~/.claude/.credentials.json")))["claudeAiOauth"]; print("file token chars:", len(o.get("accessToken") or ""))'
+```
 
-`scripts/read-quota.py` checks `claude auth status` when no weekly line matches, so this surfaces as an auth error naming the fix instead of a parse error sending you after the wrong thing.
+Zero in the keychain against a real length in the file means the item is shadowing a working credential. Delete the item and the file takes over:
 
-Whatever the host, prove auth **through the scheduler** rather than in your shell. `scripts/burn.sh` in dry-run mode does it for one cheap quota read.
+```bash
+security delete-generic-password -s 'Claude Code-credentials'
+```
+
+`claude` picks up the file on its next run, in your shell and in the scheduled job alike, and the plist needs nothing added.
+
+On a host with no interactive login there is no file to fall back to. Mint a credential there with `claude setup-token` and put it in the job's environment as `CLAUDE_CODE_OAUTH_TOKEN`.
+
+**Codex resolves one store.** `~/.codex/auth.json`, which a scheduled job reads like any other file. Verified against 0.166.0.
 
 ## macOS: launchd
 

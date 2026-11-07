@@ -88,6 +88,34 @@ def logged_in(claude):
         return True
 
 
+KEYCHAIN_SERVICE = "Claude Code-credentials"
+
+
+def emptied_keychain_item():
+    """True when the macOS keychain holds a Claude Code credential whose tokens
+    are empty strings.
+
+    Claude Code reads credentials from two stores and prefers the keychain
+    whenever an item exists there, falling back to ~/.claude/.credentials.json
+    otherwise. A logout can leave the keychain item in place with accessToken
+    and refreshToken set to "" and expiresAt 0. That emptied item then shadows a
+    perfectly good file, so a context able to read the keychain authenticates as
+    nobody while a context that cannot read it works fine.
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        got = subprocess.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=30)
+        if got.returncode != 0:
+            return False
+        oauth = json.loads(got.stdout).get("claudeAiOauth", {})
+        return not oauth.get("accessToken") and not oauth.get("refreshToken")
+    except Exception:
+        return False
+
+
 def read_claude(model_hint):
     claude = binary("CLAUDE_BIN", "claude")
     try:
@@ -98,18 +126,23 @@ def read_claude(model_hint):
 
     buckets = {m.group("bucket").strip().lower(): m for m in USAGE_RE.finditer(out)}
     if not buckets:
-        # The most common cause is not a reworded /usage, it is a scheduled job
-        # that cannot authenticate. On macOS the credentials sit in the login
-        # keychain, and a launchd or cron job cannot read it, so claude runs an
-        # anonymous session that does no work and prints a zero-cost summary.
-        # Checking auth here turns a confusing parse error into the real reason.
+        # An unauthenticated session is a likelier cause than a reworded /usage.
+        # claude runs anonymously, does no work, and prints a zero-cost summary,
+        # so checking auth here turns a parse error into the real reason.
         if not logged_in(claude):
-            die("claude is not authenticated in this environment, so there is no "
-                "quota to read. A scheduled job cannot reach the macOS login "
-                "keychain where `claude` keeps its credentials, even though your "
-                "interactive shell can. Mint a long-lived token with "
-                "`claude setup-token` and put it in the job's environment as "
-                "CLAUDE_CODE_OAUTH_TOKEN. docs/scheduling.md covers this.")
+            if emptied_keychain_item():
+                die("claude is not authenticated here because the macOS keychain "
+                    f"item '{KEYCHAIN_SERVICE}' holds empty tokens, and claude "
+                    "prefers the keychain over ~/.claude/.credentials.json "
+                    "whenever an item exists. Delete the empty item so the live "
+                    "file takes over:\n"
+                    f"    security delete-generic-password -s '{KEYCHAIN_SERVICE}'\n"
+                    "docs/scheduling.md covers the two credential stores.")
+            die("claude is not authenticated in the environment this ran in, so "
+                "there is no quota to read, and an interactive shell being logged "
+                "in does not change that. Run `claude auth status` the way the "
+                "scheduler runs it and fix what it reports. docs/scheduling.md "
+                "covers the credential stores.")
         die("no weekly line matched in the /usage output, and auth looks fine, so "
             "the output shape probably changed. Refusing to spend on an unknown "
             f"quota. Re-check docs/quota-detection.md. Output began: {out[:200]!r}")

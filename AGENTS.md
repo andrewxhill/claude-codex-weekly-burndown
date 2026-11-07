@@ -14,7 +14,7 @@ Project context for Codex CLI sessions in this repo. Read `CLAUDE.md` as well: t
 
 **Config.** `~/.config/weekly-burn/codex.conf`, same shape as `claude.conf` in `docs/config.md`. `effort` is passed through as `model_reasoning_effort`, and `permission_mode` is a sandbox policy: `read-only`, `workspace-write`, or `danger-full-access`.
 
-**Authentication survives a scheduled job.** Codex keeps tokens in `~/.codex/auth.json`, which a launchd or cron job reads like any other file. The keychain problem described in `docs/scheduling.md` is a Claude-side one.
+**Authentication survives a scheduled job.** Codex resolves one credential store, `~/.codex/auth.json`, which a launchd or cron job reads like any other file. The shadowed-credential problem in `docs/scheduling.md` is Claude-side only.
 
 ## Open question: skill discovery
 

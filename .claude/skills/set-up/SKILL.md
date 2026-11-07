@@ -75,9 +75,9 @@ Then fire each provider's job the way the scheduler will, so the scheduler's own
 
 With `dry_run=true` this costs one cheap quota read and proves **the chain**: the scheduler finds the script, the script finds the binary, **the binary authenticates in the scheduler's context**, the config parses, and the plan resolves. Quote the log lines from `~/.local/state/weekly-burn/last-run.log`.
 
-Running the script yourself from a terminal is not a substitute and does not count. Your shell has a keychain and a login session the scheduler lacks, so a run that works for you says nothing about the scheduled one. This step is the only thing between the user and a burner that reports success today and silently does nothing every week.
+Running the script yourself from a terminal is not a substitute and does not count. Your shell can resolve a different credential from the scheduler's, so a run that works for you says nothing about the scheduled one. This step is the only thing between the user and a burner that reports success today and silently does nothing every week.
 
-An abort here is the expected first outcome on macOS. Read what it says, fix that, and fire again until the log shows a clean dry run.
+An abort naming authentication is common on the first macOS attempt, and `docs/scheduling.md` has the credential comparison that settles it. Read what the log says, fix that, and fire again until it shows a clean dry run.
 
 Run `scripts/install-global-skill.sh`, then confirm the global skill resolves from an unrelated directory:
 

@@ -259,8 +259,8 @@ out="$(PATH=/usr/bin:/bin "$repo_root/scripts/read-quota.py" claude 2>&1)"; rc=$
 out="$(PATH=/usr/bin:/bin "$repo_root/scripts/read-quota.py" codex 2>&1)"; rc=$?
 { [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qiE 'PATH|CODEX_BIN'; } && ok "names the PATH problem when codex is unfindable" || bad "names the PATH problem when codex is unfindable" "$out"
 
-# A scheduled job that cannot reach the keychain used to surface as a confusing
-# "/usage format changed" error. It should name the real cause.
+# An unauthenticated session used to surface as a confusing "/usage format
+# changed" error. It should name the real cause.
 probe="$(mktemp -d)"
 cat > "$probe/claude" <<'STUB'
 #!/usr/bin/env bash
@@ -270,9 +270,32 @@ case "$*" in
 esac
 STUB
 chmod +x "$probe/claude"
-out="$(CLAUDE_BIN="$probe/claude" "$repo_root/scripts/read-quota.py" claude 2>&1)"; rc=$?
+
+# No keychain item at all: say so plainly and point at the check that reproduces it.
+cat > "$probe/security" <<'STUB'
+#!/usr/bin/env bash
+exit 44
+STUB
+chmod +x "$probe/security"
+out="$(PATH="$probe:$PATH" CLAUDE_BIN="$probe/claude" "$repo_root/scripts/read-quota.py" claude 2>&1)"; rc=$?
 { [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'not authenticated'; } && ok "an unauthenticated job is reported as an auth problem" || bad "an unauthenticated job is reported as an auth problem" "$out"
-printf '%s' "$out" | grep -q 'CLAUDE_CODE_OAUTH_TOKEN' && ok "the auth error names the fix" || bad "the auth error names the fix" "$out"
+printf '%s' "$out" | grep -q 'auth status' && ok "the auth error names the check that reproduces it" || bad "the auth error names the check that reproduces it" "$out"
+
+# An emptied keychain item shadowing a live credentials file. This is the real
+# failure seen on macOS, so the reader has to name the item and the one command
+# that clears it rather than blaming keychain access.
+cat > "$probe/security" <<'STUB'
+#!/usr/bin/env bash
+echo '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}'
+STUB
+chmod +x "$probe/security"
+out="$(PATH="$probe:$PATH" CLAUDE_BIN="$probe/claude" "$repo_root/scripts/read-quota.py" claude 2>&1)"; rc=$?
+if [ "$(uname)" = Darwin ]; then
+  { [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'empty tokens'; } && ok "an emptied keychain item is named as the cause" || bad "an emptied keychain item is named as the cause" "$out"
+  printf '%s' "$out" | grep -q 'delete-generic-password' && ok "the emptied-item error gives the command that clears it" || bad "the emptied-item error gives the command that clears it" "$out"
+else
+  ok "emptied keychain item (macOS only, skipped)"; ok "emptied-item fix command (macOS only, skipped)"
+fi
 
 # A logged-in claude whose output really did change must not be blamed on auth.
 cat > "$probe/claude" <<'STUB'
