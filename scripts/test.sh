@@ -18,8 +18,29 @@ grep -rqniE 'tokens remaining' "$repo_root/docs" "$repo_root/.claude" "$repo_roo
   && bad "no token-count claims" "providers report percent used" || ok "no token-count claims"
 grep -rqniE 'every Sunday' "$repo_root"/*.md 2>/dev/null \
   && bad "no hardcoded reset weekday" || ok "no hardcoded reset weekday"
-grep -rqn 'burn-wrapper' "$repo_root" --include='*.md' 2>/dev/null \
-  && bad "no stale burn-wrapper references" || ok "no stale burn-wrapper references"
+grep -rqniE 'couple of hours|two hours before' "$repo_root"/*.md "$repo_root/docs" 2>/dev/null \
+  && bad "no fixed lead time claims" "the window length is the user's to choose" || ok "no fixed lead time claims"
+
+# Every backticked repo path in prose points at something that exists. A stale
+# pointer sends an agent nowhere, which is how `burn-wrapper.sh` survived a
+# rename. Placeholders carry < > and are skipped.
+stale=0
+while IFS= read -r src; do
+  while IFS= read -r tgt; do
+    case "$tgt" in *'<'*|*'>'*|*'~'*) continue;; esac
+    [ -e "$repo_root/$tgt" ] || { stale=$((stale+1)); printf '       %s -> %s\n' "${src#"$repo_root"/}" "$tgt"; }
+  done < <(grep -oE '`(scripts|docs|skills|\.claude|\.codex)/[A-Za-z0-9._/-]+`' "$src" 2>/dev/null | tr -d '`' | sort -u)
+done < <(find "$repo_root" -name '*.md' -not -path '*/.git/*' -type f | sort)
+[ "$stale" -eq 0 ] && ok "every backticked repo path exists" || bad "every backticked repo path exists" "$stale stale"
+
+# A skill whose frontmatter name drifts from its directory never resolves.
+mismatch=0
+while IFS= read -r sk; do
+  dir="$(basename "$(dirname "$sk")")"
+  nm="$(sed -n 's/^name: *//p' "$sk" | head -1)"
+  [ "$dir" = "$nm" ] || { mismatch=$((mismatch+1)); printf '       %s: name=%s dir=%s\n' "${sk#"$repo_root"/}" "$nm" "$dir"; }
+done < <(find "$repo_root/.claude/skills" "$repo_root/skills" -name SKILL.md -type f 2>/dev/null | sort)
+[ "$mismatch" -eq 0 ] && ok "skill names match their directories" || bad "skill names match their directories" "$mismatch"
 
 printf '\npublic plan is inert\n'
 rows="$(grep -cE '^- \[[ x]\]' "$repo_root/PLAN.md" 2>/dev/null || true)"

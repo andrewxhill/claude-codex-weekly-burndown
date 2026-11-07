@@ -67,6 +67,7 @@ The burner works while nobody is watching, so:
 | `docs/plan-format.md` | Row shape and the rules |
 | `scripts/burn.sh` | Trigger entry point: guard, deadline, hard stop |
 | `scripts/read-quota.py` | Reads the weekly window for either provider |
-| `scripts/test.sh` | The gate. Stubs `claude`, spends nothing |
+| `scripts/test.sh` | The gate. Stubs both CLIs, spends nothing |
+| `skills/add-job-to-burn-plan/` | The globally installed skill that files jobs |
 | `.claude/skills/burn-remaining/` | What runs at fire time |
 | `.claude/skills/set-up/` | The setup procedure |

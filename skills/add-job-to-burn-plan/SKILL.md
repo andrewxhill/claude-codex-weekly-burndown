@@ -1,6 +1,6 @@
 ---
 name: add-job-to-burn-plan
-description: Append a job to the user's weekly burn plan. Use when the user says "add that to the burn list", "put that on the burn plan", "save it for next week's burn", "if we have tokens left this week", "burn it later", or otherwise defers work to the weekly leftover-quota queue. Available in every agent session on this machine.
+description: Defer work to the weekly burn plan by writing the brief and inserting the row. Use when the user names the burn plan ("add that to the burn list", "burn it later"), or defers work to whatever weekly quota is left over.
 ---
 
 The user is deferring work to their weekly burn plan. Write the brief, slot the row, confirm, and get back to whatever you were doing. This fires mid-task, so keep it short.
@@ -9,9 +9,9 @@ The user is deferring work to their weekly burn plan. Write the brief, slot the 
 
 Read `~/.config/weekly-burn/plan-path`. It holds one absolute path to `PLAN.md`.
 
-Missing, or the file it names does not exist: tell the user weekly-burn is not set up and point them at the repo to run `set it up`. Then stop.
+Missing, or the file it names does not exist: tell the user weekly-burn is not set up, point them at the repo to run `set it up`, and stop.
 
-Job briefs live beside the plan, at `<dirname of plan-path>/jobs/<slug>/readme.md`. Not in this repo, and not in the weekly-burn repo. The plan path is the only thing that decides where they go.
+Job briefs live beside the plan, at `<dirname of plan-path>/jobs/<slug>/readme.md`. That path is the only thing deciding where they go, so a brief never lands in the repo you happen to be working in.
 
 Confirm the plan has a `## Open jobs, highest priority first` heading before you edit it.
 
@@ -22,7 +22,7 @@ You have been in this conversation. You know what the work is. Write the descrip
 Ask, in one batch, only what is genuinely open:
 
 - **Priority.** Where it lands against the current top rows. Default to the end of the open list. Read the existing rows first so you can name them instead of asking abstractly.
-- **Expiration.** Default four weeks from today. Convert to an absolute `YYYY-MM-DD`; no relative dates in the file.
+- **Expiration.** Default four weeks from today. Convert to an absolute `YYYY-MM-DD`, since a relative date rots in a file.
 
 Skip either question when they already answered it. Someone who says "put that on the burn list for next week" has given you the expiration.
 
@@ -35,7 +35,7 @@ It holds:
 - A short title.
 - Two to five sentences: what the job is, why it matters, what done looks like.
 - The files, URLs, commands, and references the burner will need. It starts cold, in a fresh session, with none of this conversation.
-- Scope boundaries, stated as boundaries. The burner runs unattended with a large budget and nobody to stop it widening the job. This paragraph is the only thing that does.
+- Scope boundaries, stated as boundaries. The burner runs unattended with a large budget and nobody to stop it widening the job. This paragraph is what does that.
 
 Write enough that a stranger could do the work. You are that stranger in a week.
 
@@ -47,15 +47,15 @@ One row, at the position they chose, under `## Open jobs, highest priority first
 - [ ] [expires YYYY-MM-DD] <one-sentence imperative description> ([jobs/<slug>](jobs/<slug>/readme.md)).
 ```
 
-Leave every other row's order alone. Leave the Completed section alone.
+Leave every other row's order alone, and leave the Completed section alone.
 
-## 5. Commit only if it belongs to a repo
+## 5. Commit only if the plan belongs to a repo
 
-The plan directory may be a git repo or a plain directory. Check.
+The plan directory may be a git repo or a plain directory. Check which.
 
-A repo: commit the brief and the row together, short imperative subject. No push.
+A repo: commit the brief and the row together, short imperative subject, no push.
 
-Not a repo: the files are written and there is nothing else to do. Do not initialize one.
+A plain directory: the files are written and you are done. Leave it uninitialized.
 
 ## 6. Confirm in one line
 

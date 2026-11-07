@@ -40,6 +40,6 @@ Setup defaults that to a private directory outside the weekly-burn repo. The rep
 
 ## Adding a job from any project
 
-Every agent session on this machine can reach the `add-job-to-burn-plan` skill. It triggers on "add that to the burn list", "save it for next week", and the rest of the phrasings in its description. The skill writes the brief, inserts the row where the user wants it, and commits when the plan directory is a git repo.
+Every agent session on this machine can reach the `add-job-to-burn-plan` skill, which writes the brief, inserts the row where the user wants it, and commits when the plan directory is a git repo. Its `SKILL.md` carries the procedure.
 
 It writes the description itself from the conversation it is already in, and asks only about priority and expiration. Being asked to restate work you just described is the fastest way to stop using a tool like this.
