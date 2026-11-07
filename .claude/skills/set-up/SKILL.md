@@ -13,6 +13,7 @@ The user may not be on the OS you expect. Establish, by checking rather than ass
 
 - OS and whether a scheduler is available: `launchctl` on macOS, `systemctl --user` on Linux with systemd, `crontab` anywhere, Task Scheduler on Windows. `docs/scheduling.md` has a worked example for each.
 - Which CLIs are installed and logged in, and their absolute paths. `command -v claude`, `command -v codex`. You need the absolute paths for the job definition.
+- **Whether each CLI can authenticate from a scheduled job, which is not the same as from your shell.** On macOS, Claude Code reads credentials from the login keychain and a launchd or cron job cannot, so it runs an anonymous session that quietly does nothing. Assume nothing here; `docs/scheduling.md` explains the check and the long-lived-token fix. Codex stores tokens in a file and is unaffected.
 - Whether a declarative system config owns scheduled jobs. A nix-darwin or home-manager host wants `launchd.user.agents` in its spec rather than a hand-written plist. Ask before editing such a host's files directly.
 - Whether `timeout` exists. `burn.sh` falls back to a watchdog without it, which works but is worth knowing.
 
@@ -72,7 +73,11 @@ Then run each provider's job by hand, through the scheduler rather than by calli
 - systemd: `systemctl --user start weekly-burn@<provider>.service`
 - cron: run the exact command line from the crontab, with `env -i` to mimic cron's empty environment.
 
-With `dry_run=true` this costs one cheap quota read and proves the whole chain: the scheduler can find the script, the script can find the binary, the binary can read the account, the config parses, and the plan resolves. Quote the log lines from `~/.local/state/weekly-burn/last-run.log`.
+With `dry_run=true` this costs one cheap quota read and proves the whole chain: the scheduler can find the script, the script can find the binary, **the binary can authenticate in the scheduler's context**, the config parses, and the plan resolves. Quote the log lines from `~/.local/state/weekly-burn/last-run.log`.
+
+Do not skip this and do not substitute running the script yourself from a terminal. Your shell has a keychain and a login session that the scheduler does not, so a run that works for you proves nothing about the scheduled one. This step is the only thing standing between the user and a burner that reports success today and silently does nothing every week.
+
+An abort here is the expected outcome the first time on macOS. Read what it says, fix that, and fire again until the log shows a clean dry run.
 
 Confirm the global skill resolves after running `scripts/install-global-skill.sh`.
 

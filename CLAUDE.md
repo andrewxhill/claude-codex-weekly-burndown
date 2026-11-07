@@ -32,6 +32,8 @@ The real plan lives outside this repo by default. `add-job-to-burn-plan` is inst
 
 **`CronCreate` cannot schedule this.** Session-only, in-memory, dead when the session exits, expires after seven days. `docs/scheduling.md` covers launchd, systemd, and cron.
 
+**A scheduled job authenticates differently from your shell.** Claude Code reads credentials from the macOS login keychain, which launchd and cron cannot reach, so it runs an anonymous session that does nothing. A long-lived `CLAUDE_CODE_OAUTH_TOKEN` in the job's environment is the fix. Codex keeps tokens in a file and is unaffected. Prove auth through the scheduler, never from a terminal.
+
 **Do not assume macOS.** Setup checks the host and picks its scheduler. `timeout` is absent from stock macOS, so the runner carries a watchdog fallback.
 
 **The burner runs unattended.** Scope boundaries in a brief are the only thing standing between a backlog row and an agent with a large budget and nobody watching.

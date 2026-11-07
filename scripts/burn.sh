@@ -134,8 +134,11 @@ fi
 # Two edges, both from the live reset. A run that ignores the opening edge treats
 # the whole rest of the week as its budget, which is ordinary usage rather than
 # burning leftovers.
+# Schedulers drift, and launchd in particular can fire a shade early. Without a
+# grace band a job that fires one minute before the edge would skip a whole week.
+open_grace_seconds=900
 not_open=""
-if [ "$seconds_until_open" -gt 0 ] && [ -z "${WEEKLY_BURN_FORCE:-}" ]; then
+if [ "$seconds_until_open" -gt "$open_grace_seconds" ] && [ -z "${WEEKLY_BURN_FORCE:-}" ]; then
   not_open="window has not opened yet; it opens $opens_human, ${window_hours}h before the reset"
 fi
 

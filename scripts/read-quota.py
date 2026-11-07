@@ -77,6 +77,17 @@ def parse_claude_reset(mon, day, time_s, ampm, tzname):
     die("could not place the reset date in a sane year")
 
 
+def logged_in(claude):
+    """Ask claude whether it is authenticated. Unparseable means assume it is,
+    so a broken probe never masks a genuine format change."""
+    try:
+        out = subprocess.run([claude, "auth", "status"],
+                             capture_output=True, text=True, timeout=60).stdout
+        return json.loads(out).get("loggedIn") is not False
+    except Exception:
+        return True
+
+
 def read_claude(model_hint):
     claude = binary("CLAUDE_BIN", "claude")
     try:
@@ -87,8 +98,21 @@ def read_claude(model_hint):
 
     buckets = {m.group("bucket").strip().lower(): m for m in USAGE_RE.finditer(out)}
     if not buckets:
-        die("no weekly line matched in the /usage output; refusing to spend on an "
-            f"unknown quota. Re-check docs/quota-detection.md. Output began: {out[:200]!r}")
+        # The most common cause is not a reworded /usage, it is a scheduled job
+        # that cannot authenticate. On macOS the credentials sit in the login
+        # keychain, and a launchd or cron job cannot read it, so claude runs an
+        # anonymous session that does no work and prints a zero-cost summary.
+        # Checking auth here turns a confusing parse error into the real reason.
+        if not logged_in(claude):
+            die("claude is not authenticated in this environment, so there is no "
+                "quota to read. A scheduled job cannot reach the macOS login "
+                "keychain where `claude` keeps its credentials, even though your "
+                "interactive shell can. Mint a long-lived token with "
+                "`claude setup-token` and put it in the job's environment as "
+                "CLAUDE_CODE_OAUTH_TOKEN. docs/scheduling.md covers this.")
+        die("no weekly line matched in the /usage output, and auth looks fine, so "
+            "the output shape probably changed. Refusing to spend on an unknown "
+            f"quota. Re-check docs/quota-detection.md. Output began: {out[:200]!r}")
 
     # `all models` meters everything. A Fable model also draws on its own bucket,
     # so take whichever of the two relevant buckets is further along.

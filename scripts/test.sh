@@ -170,6 +170,24 @@ out="$("$runner_under_test" claude 2>&1)"; rc=$?
 { [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qi 'window opens'; } && ok "dry run says when the window opens" || bad "dry run says when the window opens" "rc=$rc $out"
 teardown_sandbox
 
+# A scheduler that fires a minute early must not no-op for a whole week. Allow a
+# grace window around the opening edge.
+setup_sandbox
+export STUB_RESET="$(python3 -I -c "
+from datetime import datetime,timedelta,timezone
+print((datetime.now(timezone.utc)+timedelta(hours=6,minutes=4)).isoformat())")"
+out="$("$runner_under_test" claude 2>&1)"
+grep -q 'burn-remaining' "$STUB_LOG" && ok "a few minutes early still counts as open" || bad "a few minutes early still counts as open" "$out"
+teardown_sandbox
+
+setup_sandbox
+export STUB_RESET="$(python3 -I -c "
+from datetime import datetime,timedelta,timezone
+print((datetime.now(timezone.utc)+timedelta(hours=7)).isoformat())")"
+out="$("$runner_under_test" claude 2>&1)"
+{ ! grep -q 'burn-remaining' "$STUB_LOG"; } && ok "an hour early is still too early" || bad "an hour early is still too early" "$out"
+teardown_sandbox
+
 printf '\nrunner: spend guard\n'
 setup_sandbox
 export STUB_ALLOWED=False STUB_PCT=100
@@ -219,6 +237,34 @@ out="$(PATH=/usr/bin:/bin "$repo_root/scripts/read-quota.py" claude 2>&1)"; rc=$
 { [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qiE 'PATH|CLAUDE_BIN'; } && ok "names the PATH problem when claude is unfindable" || bad "names the PATH problem when claude is unfindable" "$out"
 out="$(PATH=/usr/bin:/bin "$repo_root/scripts/read-quota.py" codex 2>&1)"; rc=$?
 { [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qiE 'PATH|CODEX_BIN'; } && ok "names the PATH problem when codex is unfindable" || bad "names the PATH problem when codex is unfindable" "$out"
+
+# A scheduled job that cannot reach the keychain used to surface as a confusing
+# "/usage format changed" error. It should name the real cause.
+probe="$(mktemp -d)"
+cat > "$probe/claude" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"auth status"*) echo '{"loggedIn": false, "authMethod": "none"}' ;;
+  *) printf 'Total cost:            $0.0000\nTotal duration (API):  0s\nUsage:                 0 input, 0 output\n' ;;
+esac
+STUB
+chmod +x "$probe/claude"
+out="$(CLAUDE_BIN="$probe/claude" "$repo_root/scripts/read-quota.py" claude 2>&1)"; rc=$?
+{ [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'not authenticated'; } && ok "an unauthenticated job is reported as an auth problem" || bad "an unauthenticated job is reported as an auth problem" "$out"
+printf '%s' "$out" | grep -q 'CLAUDE_CODE_OAUTH_TOKEN' && ok "the auth error names the fix" || bad "the auth error names the fix" "$out"
+
+# A logged-in claude whose output really did change must not be blamed on auth.
+cat > "$probe/claude" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"auth status"*) echo '{"loggedIn": true, "authMethod": "claude.ai"}' ;;
+  *) echo 'weekly usage is now rendered some entirely new way' ;;
+esac
+STUB
+chmod +x "$probe/claude"
+out="$(CLAUDE_BIN="$probe/claude" "$repo_root/scripts/read-quota.py" claude 2>&1)"; rc=$?
+{ [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'shape probably changed'; } && ok "a real format change is not blamed on auth" || bad "a real format change is not blamed on auth" "$out"
+rm -rf "$probe"
 
 printf '\ninstall-global-skill\n'
 sandbox="$(mktemp -d)"

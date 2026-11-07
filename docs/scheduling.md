@@ -22,6 +22,26 @@ Read the live reset, subtract `window_hours`, convert to local time, and express
 
 A scheduled job gets a minimal environment, so set `CLAUDE_BIN` or `CODEX_BIN` to the absolute path of the binary. `which claude` in your shell is not what the scheduler sees. Everything in this repo fails with that exact complaint rather than something vague, but it still fails.
 
+## Authentication is the first thing that breaks
+
+Your shell can authenticate. A scheduled job may not, and it fails in a way that looks like something else.
+
+**Claude Code on macOS keeps its credentials in the login keychain.** A launchd or cron job cannot read that keychain, so `claude` runs an anonymous session that does no work and prints a zero-cost summary. Verified on 2.1.319: the same command that works in a terminal returns `loggedIn: false` under launchd, with or without sudo. The first version of this repo would have installed a burner that failed silently every week.
+
+Fix it with a long-lived token:
+
+```bash
+claude setup-token          # interactive, needs a browser
+```
+
+Put the token in the job's environment as `CLAUDE_CODE_OAUTH_TOKEN`. On a host that injects secrets into the launchd context, put it with the other secrets rather than in the plist, where it would sit in the nix store or a world-readable file.
+
+**Codex does not have this problem.** It keeps tokens in `~/.codex/auth.json`, which a scheduled job reads like any other file. Verified against 0.166.0.
+
+`scripts/read-quota.py` checks `claude auth status` when no weekly line matches, so this surfaces as an auth error naming the fix instead of a parse error sending you after the wrong thing.
+
+Whatever the host, prove auth **through the scheduler** rather than in your shell. `scripts/burn.sh` in dry-run mode does it for one cheap quota read.
+
 ## macOS: launchd
 
 ```xml
